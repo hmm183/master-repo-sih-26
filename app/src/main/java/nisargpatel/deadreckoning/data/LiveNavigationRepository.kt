@@ -38,6 +38,8 @@ import nisargpatel.deadreckoning.domain.state.SessionState
 import nisargpatel.deadreckoning.ml.IdrMotionEngine
 import nisargpatel.deadreckoning.ml.IdrPrediction
 import nisargpatel.deadreckoning.ml.MotionClass
+import nisargpatel.deadreckoning.ml.PinoDrMotionEngine
+import nisargpatel.deadreckoning.ml.PinoPrediction
 import nisargpatel.deadreckoning.ml.V8DeadReckoningEngine
 import nisargpatel.deadreckoning.ml.V8Prediction
 import nisargpatel.deadreckoning.fusion.FusedVehicleState
@@ -85,10 +87,24 @@ class LiveNavigationRepository(
      * V8 was worse than assuming constant speed with no turning, so keeping it as the
      * primary model would be worse than running no model at all.
      */
-    private val idrModel = runCatching { IdrMotionEngine(context) }
-        .onFailure { Log.w("LiveNavigation", "IDR-V1 unavailable, falling back to V8", it) }
+    /**
+     * Primary on-device dead reckoning model: PINO-DR v3 (Physics-Informed Neural Operator).
+     * 4-channel input [a_fwd, w_yaw, a_lat, v_prev] with kinematic residual skip connection
+     * and multi-task ZUPT hysteresis gate that eliminates standstill drift and runaway speed.
+     * IDR-V1 and V8 kept as fallbacks.
+     */
+    private val pinoModel = runCatching { PinoDrMotionEngine(context) }
+        .onSuccess { Log.i("LiveNavigation", "Loaded PINO-DR v3 ONNX model") }
+        .onFailure { Log.w("LiveNavigation", "PINO-DR v3 unavailable, falling back to IDR-V1", it) }
         .getOrNull()
-    private val model = if (idrModel == null) {
+    private val idrModel = if (pinoModel == null) {
+        runCatching { IdrMotionEngine(context) }
+            .onFailure { Log.w("LiveNavigation", "IDR-V1 unavailable, falling back to V8", it) }
+            .getOrNull()
+    } else {
+        null
+    }
+    private val model = if (pinoModel == null && idrModel == null) {
         runCatching { V8DeadReckoningEngine(context) }.getOrNull()
     } else {
         null
@@ -122,8 +138,9 @@ class LiveNavigationRepository(
     override val gnssState: StateFlow<GNSSState> = _gnssState.asStateFlow()
     private val _aiState = MutableStateFlow(
         AIState(
-            isModelLoaded = idrModel != null || model != null,
-            modelVersion = idrModel?.let { "${it.manifest.model} (${it.manifest.preprocessing_version})" }
+            isModelLoaded = pinoModel != null || idrModel != null || model != null,
+            modelVersion = pinoModel?.manifest?.deployment_status
+                ?: idrModel?.let { "${it.manifest.model} (${it.manifest.preprocessing_version})" }
                 ?: model?.manifest?.deployment_status
                 ?: "Unavailable"
         )
@@ -313,9 +330,6 @@ class LiveNavigationRepository(
         _activeRouteInfo.value = route
         activeRoute = route.routePoints
         _mapState.value = _mapState.value.copy(routePoints = route.routePoints)
-        if (route.routePoints.size > 1 && !_navigationState.value.isNavigating) {
-            startNavigation()
-        }
     }
 
     override fun clearActiveRoute() {
@@ -636,7 +650,18 @@ class LiveNavigationRepository(
             _aiState.value.predictedSpeedKmh / 3.6
         }
 
-        if (idrModel != null) {
+        if (pinoModel != null) {
+            val aFwd = if (state.isVehicleFrameValid) state.vehicleAccelForward else state.accelY
+            val wYaw = if (state.isVehicleFrameValid) state.vehicleGyroYaw else state.gyroZ
+            val aLat = if (state.isVehicleFrameValid) state.vehicleAccelRight else state.accelX
+            pinoModel.addSample(
+                timestampNs = timestampNs,
+                aFwd = aFwd,
+                wYaw = wYaw,
+                aLat = aLat,
+                seedVelocityMps = seedSpeed.toFloat()
+            )?.let(::applyPinoPrediction)
+        } else if (idrModel != null) {
             idrModel.addSample(
                 timestampNs, state.accelX, state.accelY, state.accelZ,
                 state.gyroX, state.gyroY, state.gyroZ,
@@ -648,6 +673,121 @@ class LiveNavigationRepository(
                 state.gyroX, state.gyroY, state.gyroZ, seedSpeed.toFloat()
             )?.let(::applyPrediction)
         }
+    }
+
+    /**
+     * Consume a PINO-DR v3 prediction.
+     * Features:
+     * - Multi-task ZUPT hysteresis gating completely halts integration and resets speed to 0.0 when stopped.
+     * - Kinematic residual skip connection tracks speed smoothly without runaway inflation during GNSS outages.
+     * - Fusion EKF integrates step forward displacement and yaw rate without straight-line drift.
+     */
+    private fun applyPinoPrediction(prediction: PinoPrediction) {
+        val rawSpeedKmh = prediction.speedKmh.toDouble()
+        val isHardwareStationary = _sensorState.value.isStationary
+        val isStationary = isHardwareStationary ||
+            prediction.isStationary ||
+            rawSpeedKmh < 0.8 ||
+            (!hasFreshGnss() && _navigationState.value.speedKmh < 0.5 && rawSpeedKmh < 2.0)
+
+        val speedKmh = if (isStationary) 0.0 else filterVehicleSpeed(rawSpeedKmh, isStationary)
+        val speedConfidence = if (isStationary) 98 else ((1.0f - prediction.zuptProbability).coerceIn(0.5f, 0.99f) * 100).toInt()
+
+        val currentModelVer = pinoModel?.manifest?.deployment_status
+            ?: _aiState.value.modelVersion.ifBlank { "PINO-DR v3 Production" }
+
+        _aiState.value = _aiState.value.copy(
+            isActive = !hasFreshGnss(),
+            isModelLoaded = true,
+            modelVersion = currentModelVer,
+            predictedSpeedKmh = speedKmh,
+            speedConfidencePercentage = speedConfidence,
+            motionClassification = if (isStationary) "Stationary" else "Driving",
+            motionConfidencePercentage = if (isStationary) 98 else ((1.0f - prediction.zuptProbability) * 100).toInt().coerceIn(75, 99),
+            inferenceTimeMs = prediction.inferenceTimeMs,
+            speedUncertaintyKmh = if (isStationary) 0.05 else 0.5,
+            forwardUncertaintyMeters = if (isStationary) 0.05 else 0.3,
+            lateralUncertaintyMeters = if (isStationary) 0.05 else 0.2,
+            headingUncertaintyDegrees = if (isStationary) 0.1 else 0.8,
+            predictionHz = 5.0
+        )
+
+        if (hasFreshGnss()) {
+            val speedError = speedKmh - _gnssState.value.speedKmh
+            squaredSpeedError += speedError * speedError
+            speedErrorSamples++
+            updateAnalytics()
+            return
+        }
+
+        val previous = _navigationState.value
+        if (!fusion.isInitialized() && (previous.latitude != 0.0 || previous.longitude != 0.0)) {
+            fusion.reset(
+                GeoPoint(previous.latitude, previous.longitude),
+                previous.speedKmh / 3.6,
+                previous.headingDegrees,
+                previous.accuracyMeters
+            )
+        }
+
+        val effectiveSpeedMps = if (isStationary) 0.0 else (speedKmh / 3.6)
+        fusion.updateSpeed(effectiveSpeedMps, if (isStationary) 0.05 else 0.3)
+
+        val stepForwardMeters = if (isStationary) 0.0 else prediction.stepForwardMeters.toDouble()
+        val stepHeadingDeltaRadians = if (isStationary) 0.0 else prediction.stepHeadingDeltaRadians.toDouble()
+
+        val fused = fusion.predict(
+            forwardMeters = stepForwardMeters,
+            lateralMeters = 0.0,
+            headingDeltaRadians = stepHeadingDeltaRadians,
+            intervalSeconds = 0.2
+        ) ?: return
+
+        if (outageStartedAtMs == 0L) {
+            outageStartedAtMs = System.currentTimeMillis()
+            outageCount++
+        }
+
+        val effectiveDrSpeed = filterVehicleSpeed(fused.speedMps * 3.6, isStationary)
+
+        _navigationState.value = previous.copy(
+            mode = NavigationMode.AI_DEAD_RECKONING,
+            speedKmh = effectiveDrSpeed,
+            headingDegrees = fused.headingDegrees,
+            latitude = fused.position.latitude,
+            longitude = fused.position.longitude,
+            accuracyMeters = fused.horizontalUncertaintyMeters,
+            confidencePercentage = navigationConfidence(fused, GnssQuality.DENIED),
+            alongTrackUncertaintyMeters = fused.alongTrackUncertaintyMeters,
+            crossTrackUncertaintyMeters = fused.crossTrackUncertaintyMeters,
+            speedUncertaintyKmh = fused.speedUncertaintyMps * 3.6,
+            headingUncertaintyDegrees = fused.headingUncertaintyDegrees,
+            outageDurationSeconds = if (outageStartedAtMs != 0L) (System.currentTimeMillis() - outageStartedAtMs) / 1000L else 0L,
+            totalDistanceKm = previous.totalDistanceKm + stepForwardMeters.coerceAtLeast(0.0) / 1000.0
+        )
+        _mapState.value = _mapState.value.copy(
+            currentPosition = fused.position,
+            rawDRPosition = fused.position,
+            drTrajectory = (_mapState.value.drTrajectory + fused.position).takeLast(200)
+        )
+
+        val match = applyRouteMatch(fused.position, isDeadReckoning = true)
+        if (match != null) {
+            val constrained = fusion.updateMapConstraint(
+                matchedPosition = match.point,
+                roadBearingDegrees = match.bearingDegrees,
+                confidence = match.confidence
+            )
+            if (constrained != null && constrained.applied) {
+                _navigationState.value = _navigationState.value.copy(
+                    latitude = constrained.state.position.latitude,
+                    longitude = constrained.state.position.longitude,
+                    accuracyMeters = constrained.state.horizontalUncertaintyMeters
+                )
+                _mapState.value = _mapState.value.copy(currentPosition = constrained.state.position)
+            }
+        }
+        updateAnalytics()
     }
 
     /**
@@ -914,9 +1054,13 @@ class LiveNavigationRepository(
             matchedPositionLat = match.point.latitude,
             matchedPositionLon = match.point.longitude,
             selectedRoadName = hmmMatch?.candidate?.roadName ?: roadCandidates.firstOrNull()?.roadName ?: "Active navigation route",
-            candidateRoads = if (roadCandidates.isEmpty()) listOf(CandidateRoad("Active navigation route", match.confidence)) else roadCandidates.map {
-                val prob = if (hmmMatch != null && it.wayId == hmmMatch.candidate.wayId) hmmMatch.confidence else (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100)
-                CandidateRoad(it.roadName, prob)
+            candidateRoads = if (roadCandidates.isEmpty()) {
+                listOf(CandidateRoad("Active navigation route", match.confidence, match.point.latitude, match.point.longitude, match.bearingDegrees ?: 0.0))
+            } else {
+                roadCandidates.map {
+                    val prob = if (hmmMatch != null && it.wayId == hmmMatch.candidate.wayId) hmmMatch.confidence else (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100)
+                    CandidateRoad(it.roadName, prob, it.point.latitude, it.point.longitude, it.bearingDegrees)
+                }
             },
             matchConfidencePercentage = match.confidence,
             distanceFromRoadMeters = match.distanceMeters,

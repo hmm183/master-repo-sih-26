@@ -12,7 +12,19 @@ data class RouteInfo(
     val estimatedTimeMinutes: Int = 0,
     val nextManeuver: String = "Choose a destination after location is available",
     val distanceToNextManeuverMeters: Int = 0,
-    val maneuverIconType: ManeuverIconType = ManeuverIconType.STRAIGHT
+    val maneuverIconType: ManeuverIconType = ManeuverIconType.STRAIGHT,
+    val alternatives: List<RouteAlternative> = emptyList(),
+    val selectedAlternativeId: String = "primary"
+)
+
+data class RouteAlternative(
+    val id: String,
+    val title: String,
+    val summary: String,
+    val routePoints: List<GeoPoint>,
+    val totalDistanceKm: Double,
+    val estimatedTimeMinutes: Int,
+    val isSelected: Boolean = false
 )
 
 enum class ManeuverIconType {

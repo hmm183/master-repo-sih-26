@@ -1,0 +1,21 @@
+{
+  "model": "PINO-DR v3",
+  "architecture": "Conv1D-BiGRU-TemporalAttention",
+  "deployment_status": "PINO-DR v3 Production",
+  "parameters": 21667,
+  "channels": [
+    "a_fwd",
+    "w_yaw",
+    "a_lat_measured",
+    "v_prev"
+  ],
+  "window_size": 10,
+  "sample_rate_hz": 10.0,
+  "prediction_hz": 1.0,
+  "heads": {
+    "displacement": "Velocity delta (m/s) with kinematic residual connection",
+    "orientation": "Yaw rate (rad/s)",
+    "zupt": "Zero-velocity stationary probability logit"
+  },
+  "zupt_threshold": 0.70
+}

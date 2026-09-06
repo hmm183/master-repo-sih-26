@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import nisargpatel.deadreckoning.domain.model.RouteInfo
 import nisargpatel.deadreckoning.domain.repository.NavigationRepository
@@ -25,10 +26,58 @@ class NavigationViewModel(
     val events: SharedFlow<NavigationEvent> = repository.navigationEvents
 
     val selectedRoute: StateFlow<RouteInfo> = repository.activeRouteInfo
+    private val _isRerouting = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val isRerouting: StateFlow<Boolean> = _isRerouting.asStateFlow()
 
     fun startNavigation() = repository.startNavigation()
     fun stopNavigation() = repository.stopNavigation()
     fun startGnssMonitoring() = repository.startGnssMonitoring()
+
+    fun selectAlternativeRoute(alternativeId: String) {
+        val current = selectedRoute.value
+        val chosen = current.alternatives.firstOrNull { it.id == alternativeId } ?: return
+
+        // Swap chosen alternative into primary, and move current primary into alternatives
+        val updatedAlternatives = mutableListOf<nisargpatel.deadreckoning.domain.model.RouteAlternative>()
+        updatedAlternatives.add(
+            nisargpatel.deadreckoning.domain.model.RouteAlternative(
+                id = "route_prev_primary_${System.currentTimeMillis() % 1000}",
+                title = current.destinationName,
+                summary = "Alternative Route",
+                routePoints = current.routePoints,
+                totalDistanceKm = current.totalDistanceKm,
+                estimatedTimeMinutes = current.estimatedTimeMinutes,
+                isSelected = false
+            )
+        )
+        updatedAlternatives.addAll(current.alternatives.filter { it.id != alternativeId })
+
+        val newRoute = current.copy(
+            routePoints = chosen.routePoints,
+            totalDistanceKm = chosen.totalDistanceKm,
+            estimatedTimeMinutes = chosen.estimatedTimeMinutes,
+            alternatives = updatedAlternatives,
+            selectedAlternativeId = alternativeId
+        )
+        repository.setActiveRoute(newRoute)
+    }
+
+    fun recalculateRoute(currentPosition: GeoPoint, destinationPoint: GeoPoint, destinationName: String) {
+        if (_isRerouting.value) return
+        _isRerouting.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val newRoute = OSRMRouteFetcher.fetchRoute(currentPosition, destinationPoint, destinationName)
+                if (newRoute.routePoints.size > 1) {
+                    repository.setActiveRoute(newRoute)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("NavigationViewModel", "Dynamic rerouting error: ${e.message}")
+            } finally {
+                _isRerouting.value = false
+            }
+        }
+    }
 
     fun selectDestination(name: String, destinationPoint: GeoPoint) {
         viewModelScope.launch(Dispatchers.IO) {

@@ -45,6 +45,7 @@ import nisargpatel.deadreckoning.ui.viewmodel.NavigationViewModel
 import nisargpatel.deadreckoning.util.NavigationMapHolder
 import nisargpatel.deadreckoning.util.PlaceSearchHelper
 import nisargpatel.deadreckoning.util.PlaceSuggestion
+import nisargpatel.deadreckoning.util.RouteMapMatcher
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -53,6 +54,19 @@ import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 
 private const val TAG = "LiveNavMap"
+
+private fun computeRoadSegmentBearing(
+    pos: GeoPoint,
+    points: List<GeoPoint>,
+    fallbackHeading: Double
+): Double {
+    if (points.size < 2) return fallbackHeading
+    val match = RouteMapMatcher.match(pos, points) ?: return fallbackHeading
+    val segBearing = match.bearingDegrees ?: return fallbackHeading
+    if (match.distanceMeters > 45.0) return fallbackHeading
+    val diff = ((segBearing - fallbackHeading + 540.0) % 360.0) - 180.0
+    return if (kotlin.math.abs(diff) < 85.0) segBearing else fallbackHeading
+}
 
 private var destinationPinDrawableCache: Drawable? = null
 
@@ -130,7 +144,43 @@ fun LiveNavigationScreen(
         else -> 0.0
     }
 
-    val isJourneyActive = navState.isNavigating || (routeInfo.routePoints.isNotEmpty() && routeInfo.destinationName.isNotBlank() && routeInfo.destinationName != "None")
+    val isRerouting by viewModel.isRerouting.collectAsState()
+    var offRouteTicks by remember { mutableStateOf(0) }
+
+    val currentVehiclePos = remember(navState.latitude, navState.longitude) {
+        if (navState.latitude != 0.0 || navState.longitude != 0.0) GeoPoint(navState.latitude, navState.longitude) else null
+    }
+
+    // Google Maps-grade vehicle road tangent alignment:
+    // When moving at driving speed (>= 2.0 km/h) with an active route, align vehicle marker
+    // tangent to the road segment to prevent diagonal / jittery orientation.
+    val roadAlignedHeading = remember(effectiveHeading, navState.speedKmh, routeInfo.routePoints, currentVehiclePos) {
+        val speed = if (navState.speedKmh >= 0.5) navState.speedKmh else 0.0
+        if (speed >= 2.0 && routeInfo.routePoints.size > 1 && currentVehiclePos != null) {
+            computeRoadSegmentBearing(currentVehiclePos, routeInfo.routePoints, effectiveHeading)
+        } else {
+            effectiveHeading
+        }
+    }
+
+    // Dynamic off-route recalculation check:
+    LaunchedEffect(navState.latitude, navState.longitude, navState.isNavigating, routeInfo.routePoints) {
+        if (navState.isNavigating && routeInfo.routePoints.size > 1 && routeInfo.destinationPoint != null && currentVehiclePos != null) {
+            val match = RouteMapMatcher.match(currentVehiclePos, routeInfo.routePoints)
+            val dist = match?.distanceMeters ?: Double.MAX_VALUE
+            if (dist > 35.0) {
+                offRouteTicks++
+                if (offRouteTicks >= 3 && !isRerouting) {
+                    viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
+                    offRouteTicks = 0
+                }
+            } else {
+                offRouteTicks = 0
+            }
+        }
+    }
+
+    val isJourneyActive = navState.isNavigating
 
     LaunchedEffect(viewModel.events) {
         viewModel.events.collect { event ->
@@ -142,18 +192,10 @@ fun LiveNavigationScreen(
         }
     }
 
-    // Direct real-time vehicle marker rotation from 100Hz IMU / compass without Compose recomposition lag
-    LaunchedEffect(mapViewRef) {
-        val map = mapViewRef ?: return@LaunchedEffect
-        viewModel.sensorState.collect { sensor ->
-            val heading = when {
-                sensor.vehicleHeadingDegrees != 0f -> ((sensor.vehicleHeadingDegrees.toDouble() % 360.0 + 360.0) % 360.0)
-                sensor.yawDegrees != 0f -> ((sensor.yawDegrees.toDouble() % 360.0 + 360.0) % 360.0)
-                else -> null
-            }
-            if (heading != null) {
-                UberVehicleMarker.updateVehicleHeading(map, heading)
-            }
+    // Direct real-time vehicle marker rotation smoothly aligned to road or heading
+    LaunchedEffect(mapViewRef, roadAlignedHeading) {
+        mapViewRef?.let { map ->
+            UberVehicleMarker.updateVehicleHeading(map, roadAlignedHeading)
         }
     }
 
@@ -192,7 +234,7 @@ fun LiveNavigationScreen(
 
                 mapView.overlays.removeAll(
                     mapView.overlays.filterIsInstance<Polyline>()
-                        .filter { it.id == "uber_actual_track" }
+                        .filter { it.id == "uber_actual_track" || it.id?.startsWith("uber_alt_route_") == true }
                 )
 
                 val existingCasing = mapView.overlays.filterIsInstance<Polyline>()
@@ -203,6 +245,23 @@ fun LiveNavigationScreen(
                     .firstOrNull { it.id == "destination_pin_marker" }
 
                 if (routeInfo.routePoints.isNotEmpty()) {
+                    // When previewing route options (before navigation starts), draw alternative routes in slate
+                    if (!navState.isNavigating && routeInfo.alternatives.isNotEmpty()) {
+                        routeInfo.alternatives.forEach { alt ->
+                            if (alt.routePoints.isNotEmpty()) {
+                                val altLine = Polyline().apply {
+                                    id = "uber_alt_route_${alt.id}"
+                                    outlinePaint.color = AndroidColor.parseColor("#94A3B8") // Slate gray alternative
+                                    outlinePaint.strokeWidth = 9.0f
+                                    outlinePaint.strokeCap = AndroidPaint.Cap.ROUND
+                                    outlinePaint.strokeJoin = AndroidPaint.Join.ROUND
+                                    setPoints(alt.routePoints)
+                                }
+                                mapView.overlays.add(0, altLine)
+                            }
+                        }
+                    }
+
                     // Google Maps outer route casing
                     val casingPolyline = existingCasing ?: Polyline().also { line ->
                         line.id = "uber_target_route_casing"
@@ -256,7 +315,7 @@ fun LiveNavigationScreen(
                     UberVehicleMarker.updateVehicleMarker(
                         mapView = mapView,
                         position = currentPos,
-                        headingDegrees = effectiveHeading
+                        headingDegrees = roadAlignedHeading
                     )
                 }
                 mapView.invalidate()
@@ -505,6 +564,46 @@ fun LiveNavigationScreen(
                 }
             }
 
+            // Dynamic Re-routing Banner (Animated)
+            AnimatedVisibility(
+                visible = isRerouting,
+                enter = slideInVertically() + fadeIn(),
+                exit = slideOutVertically() + fadeOut()
+            ) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF2563EB),
+                    shape = RoundedCornerShape(14.dp),
+                    shadowElevation = 5.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "RE-ROUTING...",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.5.sp
+                            )
+                            Text(
+                                text = "Recalculating fastest path to ${routeInfo.destinationName}",
+                                color = Color.White.copy(alpha = 0.9f),
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            }
+
             // Pothole Alert Toast (Animated)
             AnimatedVisibility(
                 visible = potholeAlert != null,
@@ -658,11 +757,12 @@ fun LiveNavigationScreen(
         }
 
         // ── Layer 3: Modern Auto Cockpit Bottom HUD (Collapsible) ──────────
-        val isJourneyActive = navState.isNavigating || routeInfo.routePoints.isNotEmpty()
         val deg = ((effectiveHeading % 360 + 360) % 360).toInt()
+        val hasRoute = routeInfo.routePoints.isNotEmpty()
+        val isNavigating = navState.isNavigating
 
-        if (!isJourneyActive) {
-            // Idle Mode: Compact floating glass cockpit bar (85%+ map completely open)
+        if (!hasRoute) {
+            // 1. Idle Mode: Compact floating glass cockpit bar (85%+ map completely open)
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -766,8 +866,151 @@ fun LiveNavigationScreen(
                     }
                 }
             }
+        } else if (!isNavigating) {
+            // 2. Route Preview Mode: Google Maps-style multiple paths picker & Start Navigation button
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 12.dp, start = 14.dp, end = 14.dp)
+                    .shadow(10.dp, RoundedCornerShape(24.dp)),
+                color = Color.White.copy(alpha = 0.98f),
+                shape = RoundedCornerShape(24.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.9f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Header: Destination & summary
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = routeInfo.destinationName.ifBlank { "Route Preview" },
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color(0xFF0F172A),
+                                maxLines = 1
+                            )
+                            Text(
+                                text = "${routeInfo.estimatedTimeMinutes} min • ${String.format("%.1f", routeInfo.totalDistanceKm)} km",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF2563EB)
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.stopNavigation() },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(Color(0xFFF1F5F9), CircleShape)
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear Route", tint = Color(0xFF64748B), modifier = Modifier.size(18.dp))
+                        }
+                    }
+
+                    // Multi-Path Choice Pills (Google Maps Style)
+                    if (routeInfo.alternatives.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "SELECT ROUTE:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF64748B),
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Primary Chosen Path Chip
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF2563EB),
+                                shadowElevation = 2.dp,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "● ${routeInfo.estimatedTimeMinutes} min",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.5.sp
+                                    )
+                                    Text(
+                                        text = "Fastest • ${String.format("%.1f", routeInfo.totalDistanceKm)}km",
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        fontSize = 10.5.sp
+                                    )
+                                }
+                            }
+
+                            // Alternative Path Chips
+                            routeInfo.alternatives.forEach { alt ->
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = Color(0xFFF8FAFC),
+                                    border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            viewModel.selectAlternativeRoute(alt.id)
+                                        }
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = "○ ${alt.estimatedTimeMinutes} min",
+                                            color = Color(0xFF334155),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.5.sp
+                                        )
+                                        Text(
+                                            text = "${alt.summary} • ${String.format("%.1f", alt.totalDistanceKm)}km",
+                                            color = Color(0xFF64748B),
+                                            fontSize = 10.5.sp,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Big Prominent "Start Navigation" Button
+                    Button(
+                        onClick = {
+                            viewModel.startNavigation()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2563EB),
+                            contentColor = Color.White
+                        ),
+                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Navigation, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Start Navigation", fontWeight = FontWeight.Black, fontSize = 15.sp)
+                        }
+                    }
+                }
+            }
         } else {
-            // Active Navigation Mode: Compact cockpit dashboard
+            // 3. Active Navigation Mode: Compact cockpit dashboard
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -2,7 +2,10 @@ package nisargpatel.deadreckoning.domain.state
 
 data class CandidateRoad(
     val roadName: String,
-    val probabilityPercentage: Int
+    val probabilityPercentage: Int,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val bearingDegrees: Double = 0.0
 )
 
 data class MapMatchingState(
