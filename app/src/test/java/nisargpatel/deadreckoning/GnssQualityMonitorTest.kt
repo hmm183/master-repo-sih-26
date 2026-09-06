@@ -350,4 +350,18 @@ class GnssQualityMonitorTest {
 
         assertEquals(1, monitor.current().outageCount)
     }
+
+    @Test
+    fun `onOutageDeclared immediately denies quality and clears usability`() {
+        val monitor = GnssQualityMonitor(config)
+        val now = monitor.warmUp()
+        assertEquals(GnssQuality.GOOD, monitor.current().quality)
+        assertTrue(monitor.current().usableForFusion)
+
+        val outage = monitor.onOutageDeclared(now + 50L, "Platform GNSS unavailable")
+        assertEquals(GnssQuality.DENIED, outage.quality)
+        assertFalse(outage.usableForFusion)
+        assertTrue(outage.reasons.any { it.contains("Platform GNSS unavailable") })
+        assertEquals(1, monitor.current().outageCount)
+    }
 }

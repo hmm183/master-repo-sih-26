@@ -56,7 +56,7 @@ data class GnssQualityConfig(
     /** A fix older than this is stale. */
     val maxFixAgeMillis: Long = 3_000L,
     /** No usable fix for this long declares an outage. */
-    val silenceTimeoutMillis: Long = 4_000L,
+    val silenceTimeoutMillis: Long = 2_000L,
     /** Faster than this between consecutive fixes is a teleport, not motion. */
     val maxPlausibleSpeedMps: Double = 70.0,
     /** Harder than this between consecutive fixes is not a road vehicle. */
@@ -234,6 +234,16 @@ class GnssQualityMonitor(private val config: GnssQualityConfig = GnssQualityConf
                 outageDurationMillis = outageDurationMillis(nowMillis)
             )
         }
+        return lastAssessment
+    }
+
+    /** Immediately declare outage when platform reports GNSS disabled or unavailable. */
+    fun onOutageDeclared(nowMillis: Long, reason: String = "GNSS disabled"): GnssAssessment {
+        enterDenied(nowMillis)
+        lastAssessment = assessment(
+            reasons = listOf(reason),
+            nowMillis = nowMillis
+        )
         return lastAssessment
     }
 

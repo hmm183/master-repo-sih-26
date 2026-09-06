@@ -2,14 +2,20 @@ package nisargpatel.deadreckoning.adapter
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
 import android.location.GnssStatus
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
 import androidx.annotation.RequiresApi
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationAvailability
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -36,6 +42,8 @@ import nisargpatel.deadreckoning.domain.state.GNSSState
  */
 class LocationAdapter(context: Context) {
 
+    private val appContext: Context = context.applicationContext
+
     private val fusedLocationClient: FusedLocationProviderClient =
         LocationServices.getFusedLocationProviderClient(context)
 
@@ -44,6 +52,72 @@ class LocationAdapter(context: Context) {
 
     private val _gnssState = MutableStateFlow(GNSSState())
     val gnssState: StateFlow<GNSSState> = _gnssState.asStateFlow()
+
+    private val _isGnssAvailable = MutableStateFlow(true)
+    val isGnssAvailable: StateFlow<Boolean> = _isGnssAvailable.asStateFlow()
+
+    private var isListening = false
+    private var isReceiverRegistered = false
+
+    fun isGpsEnabled(): Boolean {
+        return locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true
+    }
+
+    private fun onGpsToggled(enabled: Boolean) {
+        _isGnssAvailable.value = enabled
+        if (!enabled) {
+            satellitesVisible = null
+            satellitesUsedInFix = null
+            _gnssState.value = _gnssState.value.copy(
+                isAvailable = false,
+                usableForFusion = false,
+                satelliteCount = 0,
+                satellitesUsedInFix = 0,
+                signalQualityPercentage = 0,
+                fixStatus = "GPS DISABLED"
+            )
+        } else {
+            _gnssState.value = _gnssState.value.copy(
+                isAvailable = true,
+                fixStatus = "SEARCHING SATELLITES"
+            )
+            // Re-request fused location updates immediately to restart GPS engine
+            try {
+                fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+            } catch (_: Exception) {}
+        }
+    }
+
+    private val directGpsListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            if (!_isGnssAvailable.value) {
+                onGpsToggled(true)
+            }
+        }
+
+        override fun onProviderEnabled(provider: String) {
+            if (provider == LocationManager.GPS_PROVIDER) {
+                onGpsToggled(true)
+            }
+        }
+
+        override fun onProviderDisabled(provider: String) {
+            if (provider == LocationManager.GPS_PROVIDER) {
+                onGpsToggled(false)
+            }
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+    }
+
+    private val providerChangedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == LocationManager.PROVIDERS_CHANGED_ACTION) {
+                onGpsToggled(isGpsEnabled())
+            }
+        }
+    }
 
     /** Raw observations for the quality monitor. Replay 1 so a late collector still sees the latest. */
     private val _fixes = MutableSharedFlow<GnssFix>(replay = 1, extraBufferCapacity = 8)
@@ -63,7 +137,23 @@ class LocationAdapter(context: Context) {
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
-            handleLocation(location)
+            val enabled = isGpsEnabled()
+            _isGnssAvailable.value = enabled
+            if (enabled) {
+                handleLocation(location)
+            }
+        }
+
+        override fun onLocationAvailability(availability: LocationAvailability) {
+            val available = availability.isLocationAvailable && isGpsEnabled()
+            _isGnssAvailable.value = available
+            if (!available) {
+                _gnssState.value = _gnssState.value.copy(
+                    isAvailable = false,
+                    usableForFusion = false,
+                    fixStatus = if (!isGpsEnabled()) "GPS DISABLED" else "GNSS UNAVAILABLE"
+                )
+            }
         }
     }
 
@@ -84,24 +174,66 @@ class LocationAdapter(context: Context) {
         override fun onStopped() {
             satellitesVisible = null
             satellitesUsedInFix = null
+            _isGnssAvailable.value = false
+            _gnssState.value = _gnssState.value.copy(
+                isAvailable = false,
+                usableForFusion = false,
+                satelliteCount = 0,
+                satellitesUsedInFix = 0,
+                signalQualityPercentage = 0,
+                fixStatus = "GNSS STOPPED"
+            )
         }
     }
 
     @SuppressLint("MissingPermission")
     fun startLocationUpdates() {
+        val enabled = isGpsEnabled()
+        _isGnssAvailable.value = enabled
+        if (isListening) return
+        isListening = true
         try {
+            if (!isReceiverRegistered) {
+                val filter = IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    appContext.registerReceiver(providerChangedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    appContext.registerReceiver(providerChangedReceiver, filter)
+                }
+                isReceiverRegistered = true
+            }
+
+            locationManager?.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                1000L,
+                0f,
+                directGpsListener,
+                Looper.getMainLooper()
+            )
+
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 val callback = gnssStatusCallback ?: createGnssStatusCallback().also { gnssStatusCallback = it }
                 locationManager?.registerGnssStatusCallback(callback, null)
             }
         } catch (e: Exception) {
+            _isGnssAvailable.value = false
             _gnssState.value = _gnssState.value.copy(isAvailable = false, fixStatus = "NO PERMISSION")
         }
     }
 
     fun stopLocationUpdates() {
+        isListening = false
         fusedLocationClient.removeLocationUpdates(locationCallback)
+        try {
+            locationManager?.removeUpdates(directGpsListener)
+        } catch (_: Exception) {}
+        if (isReceiverRegistered) {
+            try {
+                appContext.unregisterReceiver(providerChangedReceiver)
+            } catch (_: Exception) {}
+            isReceiverRegistered = false
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             gnssStatusCallback?.let { callback ->
                 runCatching { locationManager?.unregisterGnssStatusCallback(callback) }
@@ -109,6 +241,7 @@ class LocationAdapter(context: Context) {
         }
         satellitesVisible = null
         satellitesUsedInFix = null
+        _isGnssAvailable.value = false
     }
 
     private fun handleLocation(location: Location) {

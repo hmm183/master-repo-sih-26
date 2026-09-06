@@ -290,20 +290,20 @@ fun LiveNavigationScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Glowing status dot
+                        val isOutage = navState.mode == NavigationMode.AI_DEAD_RECKONING || !gnssState.isAvailable
                         Box(
                             modifier = Modifier
                                 .size(9.dp)
                                 .background(
-                                    color = if (navState.mode == NavigationMode.AI_DEAD_RECKONING) Color(0xFFF59E0B) else Color(0xFF10B981),
+                                    color = if (isOutage) Color(0xFFF59E0B) else if (navState.mode == NavigationMode.GNSS_RECOVERY) Color(0xFF3B82F6) else Color(0xFF10B981),
                                     shape = CircleShape
                                 )
                         )
                         Spacer(modifier = Modifier.width(7.dp))
                         Text(
-                            text = when (navState.mode) {
-                                NavigationMode.GNSS_INS -> "GNSS + INS"
-                                NavigationMode.AI_DEAD_RECKONING -> "AI DEAD RECK"
-                                NavigationMode.GNSS_RECOVERY -> "GNSS RECOVERY"
+                            text = when {
+                                isOutage -> "AI DEAD RECK"
+                                navState.mode == NavigationMode.GNSS_RECOVERY -> "GNSS RECOVERY"
                                 else -> "GNSS + INS"
                             },
                             fontWeight = FontWeight.Bold,
@@ -312,10 +312,9 @@ fun LiveNavigationScreen(
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = when (navState.mode) {
-                                NavigationMode.GNSS_INS -> "• Hybrid"
-                                NavigationMode.AI_DEAD_RECKONING -> "• Outage"
-                                NavigationMode.GNSS_RECOVERY -> "• Reacquire"
+                            text = when {
+                                isOutage -> "• Outage"
+                                navState.mode == NavigationMode.GNSS_RECOVERY -> "• Reacquire"
                                 else -> "• Hybrid"
                             },
                             fontWeight = FontWeight.Normal,
@@ -467,7 +466,7 @@ fun LiveNavigationScreen(
 
             // GNSS Outage Banner (Animated)
             AnimatedVisibility(
-                visible = navState.mode == NavigationMode.AI_DEAD_RECKONING || navState.outageDurationSeconds > 0,
+                visible = !gnssState.isAvailable || navState.mode == NavigationMode.AI_DEAD_RECKONING,
                 enter = slideInVertically() + fadeIn(),
                 exit = slideOutVertically() + fadeOut()
             ) {

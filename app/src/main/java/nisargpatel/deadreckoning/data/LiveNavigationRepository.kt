@@ -161,6 +161,38 @@ class LiveNavigationRepository(
     init {
         calibrationStore.load()?.let(alignmentCalibrator::restore)
         sensorAdapter.startListening()
+        locationAdapter.startLocationUpdates()
+        scope.launch {
+            locationAdapter.isGnssAvailable.collect { isAvailable ->
+                val now = System.currentTimeMillis()
+                if (!isAvailable) {
+                    if (outageStartedAtMs == 0L) {
+                        outageStartedAtMs = now
+                        outageCount++
+                    }
+                    val assessment = gnssMonitor.onOutageDeclared(now, "Platform GNSS unavailable/disabled")
+                    _gnssState.value = _gnssState.value.copy(
+                        isAvailable = false,
+                        usableForFusion = false,
+                        quality = assessment.quality,
+                        fixStatus = fixStatusLabel(assessment.quality),
+                        signalQualityPercentage = 0,
+                        qualityReasons = assessment.reasons,
+                        outageDurationSeconds = 0L
+                    )
+                    _navigationState.value = _navigationState.value.copy(
+                        mode = NavigationMode.AI_DEAD_RECKONING,
+                        outageDurationSeconds = 0L
+                    )
+                    _aiState.value = _aiState.value.copy(isActive = true)
+                } else {
+                    _gnssState.value = _gnssState.value.copy(
+                        isAvailable = true,
+                        fixStatus = "GNSS REACQUIRING"
+                    )
+                }
+            }
+        }
         scope.launch {
             sensorAdapter.sensorState.collect { state ->
                 val alignment = alignmentCalibrator.alignment()
@@ -180,7 +212,7 @@ class LiveNavigationRepository(
                 val rawAzimuth = ((vehicleHeading % 360.0 + 360.0) % 360.0)
                 val liveSpeed = _navigationState.value.speedKmh
                 val gnssBearing = _gnssState.value.bearingDegrees
-                val liveHeading = if (liveSpeed >= 6.0 && gnssBearing != 0.0) {
+                val liveHeading = if (hasFreshGnss() && liveSpeed >= 6.0 && gnssBearing != 0.0) {
                     ((gnssBearing % 360.0 + 360.0) % 360.0)
                 } else if (rawAzimuth != 0.0) {
                     rawAzimuth
@@ -196,7 +228,7 @@ class LiveNavigationRepository(
                 observeGnssSilence()
 
                 processPothole(alignedState)
-                if (_navigationState.value.isNavigating) processNavigationSensor(alignedState)
+                processNavigationSensor(alignedState)
             }
         }
         scope.launch {
@@ -232,17 +264,6 @@ class LiveNavigationRepository(
                     qualityReasons = assessment.reasons,
                     outageDurationSeconds = assessment.outageDurationMillis / 1_000L
                 )
-
-                if (!_navigationState.value.isNavigating && fix.latitude != 0.0 && fix.longitude != 0.0) {
-                    val rawFixSpeed = fix.speedMps * 3.6
-                    val filteredFixSpeed = filterVehicleSpeed(rawFixSpeed)
-                    _navigationState.value = _navigationState.value.copy(
-                        latitude = fix.latitude,
-                        longitude = fix.longitude,
-                        accuracyMeters = if (fix.horizontalAccuracyMeters.isFinite()) fix.horizontalAccuracyMeters else _navigationState.value.accuracyMeters,
-                        speedKmh = filteredFixSpeed
-                    )
-                }
 
                 if (assessment.usableForFusion) {
                     lastGnssUpdateMs = now
@@ -329,7 +350,18 @@ class LiveNavigationRepository(
 
         val before = gnssMonitor.current().quality
         val assessment = gnssMonitor.onSilence(now)
+
+        if (outageStartedAtMs != 0L) {
+            val durationSec = (now - outageStartedAtMs) / 1_000L
+            if (_navigationState.value.outageDurationSeconds != durationSec) {
+                _navigationState.value = _navigationState.value.copy(outageDurationSeconds = durationSec)
+                _gnssState.value = _gnssState.value.copy(outageDurationSeconds = durationSec)
+            }
+        }
+
         if (assessment.quality == before && assessment.quality != GnssQuality.DENIED) return
+
+        val outageSec = if (outageStartedAtMs != 0L) (now - outageStartedAtMs) / 1_000L else assessment.outageDurationMillis / 1_000L
 
         _gnssState.value = _gnssState.value.copy(
             isAvailable = assessment.usableForFusion,
@@ -338,8 +370,22 @@ class LiveNavigationRepository(
             fixStatus = fixStatusLabel(assessment.quality),
             signalQualityPercentage = signalQuality(assessment),
             qualityReasons = assessment.reasons,
-            outageDurationSeconds = assessment.outageDurationMillis / 1_000L
+            outageDurationSeconds = outageSec
         )
+
+        if (!assessment.usableForFusion) {
+            if (outageStartedAtMs == 0L) {
+                outageStartedAtMs = now
+                outageCount++
+            }
+            if (_navigationState.value.mode != NavigationMode.AI_DEAD_RECKONING) {
+                _navigationState.value = _navigationState.value.copy(
+                    mode = NavigationMode.AI_DEAD_RECKONING,
+                    outageDurationSeconds = outageSec
+                )
+                _aiState.value = _aiState.value.copy(isActive = true)
+            }
+        }
     }
 
     /**
@@ -400,7 +446,6 @@ class LiveNavigationRepository(
     }
 
     private fun applyGnss(state: GNSSState, assessment: GnssAssessment) {
-        if (!_navigationState.value.isNavigating) return
         val position = GeoPoint(state.latitude, state.longitude)
         val alignment = alignmentCalibrator.addObservation(
             phoneYawDegrees = _sensorState.value.yawDegrees,
@@ -489,6 +534,7 @@ class LiveNavigationRepository(
             headingUncertaintyDegrees = fused.headingUncertaintyDegrees,
             outageDurationSeconds = 0
         )
+        _aiState.value = _aiState.value.copy(isActive = false)
         _mapState.value = _mapState.value.copy(
             currentPosition = effectivePosition,
             gnssTrajectory = (_mapState.value.gnssTrajectory + effectivePosition).takeLast(200)
@@ -702,8 +748,7 @@ class LiveNavigationRepository(
             crossTrackUncertaintyMeters = fused.crossTrackUncertaintyMeters,
             speedUncertaintyKmh = fused.speedUncertaintyMps * 3.6,
             headingUncertaintyDegrees = fused.headingUncertaintyDegrees,
-            outageDurationSeconds = previous.outageDurationSeconds +
-                stepIntervalSeconds.toLong().coerceAtLeast(1L),
+            outageDurationSeconds = if (outageStartedAtMs != 0L) (System.currentTimeMillis() - outageStartedAtMs) / 1000L else 0L,
             totalDistanceKm = previous.totalDistanceKm +
                 stepForwardMeters.coerceAtLeast(0.0) / 1000.0
         )
@@ -782,8 +827,7 @@ class LiveNavigationRepository(
             outageStartedAtMs = System.currentTimeMillis()
             outageCount++
         }
-        val nextOutage = previous.outageDurationSeconds +
-            PreprocessingSpec.LEGACY_V8.windowSpanSeconds.toLong().coerceAtLeast(1L)
+        val nextOutage = if (outageStartedAtMs != 0L) (System.currentTimeMillis() - outageStartedAtMs) / 1000L else 0L
         val effectiveDrSpeed = filterVehicleSpeed(fused.speedMps * 3.6, isStationary)
         _navigationState.value = previous.copy(
             mode = NavigationMode.AI_DEAD_RECKONING,
@@ -944,11 +988,15 @@ class LiveNavigationRepository(
     }
 
     /**
-     * Stage 4: trust now comes from the measurement-based quality monitor. The old version
-     * asked only whether a callback had arrived recently, so an inaccurate or stale fused
-     * fix would keep dead reckoning suppressed indefinitely.
+     * Stage 4: trust now comes from the measurement-based quality monitor, update recency,
+     * and platform provider availability.
      */
-    private fun hasFreshGnss() = gnssMonitor.current().usableForFusion
+    private fun hasFreshGnss(): Boolean {
+        val usable = gnssMonitor.current().usableForFusion
+        val isRecentlyUpdated = lastGnssUpdateMs != 0L && (System.currentTimeMillis() - lastGnssUpdateMs) < 2200L
+        val isPlatformAvailable = locationAdapter.isGnssAvailable.value
+        return usable && isRecentlyUpdated && isPlatformAvailable
+    }
 
     private fun advance(latitude: Double, longitude: Double, headingDegrees: Double, forwardMeters: Float, lateralMeters: Float): GeoPoint {
         if (latitude == 0.0 && longitude == 0.0) return GeoPoint(0.0, 0.0)

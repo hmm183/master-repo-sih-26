@@ -73,8 +73,9 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // 1. Top Bar Header (Settings button removed for perfect vertical alignment)
+        val effectiveMode = if (!gnssState.isAvailable) NavigationMode.AI_DEAD_RECKONING else navState.mode
         HomeTopHeader(
-            mode = navState.mode,
+            mode = effectiveMode,
             onModeClicked = onModeClicked
         )
 
