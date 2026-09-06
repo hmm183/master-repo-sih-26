@@ -2,6 +2,7 @@
   "model": "PINO-DR v3",
   "architecture": "Conv1D-BiGRU-TemporalAttention",
   "deployment_status": "PINO-DR v3 Production",
+  "preprocessing_version": "pino-v3",
   "parameters": 21667,
   "channels": [
     "a_fwd",
@@ -9,9 +10,20 @@
     "a_lat_measured",
     "v_prev"
   ],
+  "raw_sample_rate_hz": 10.0,
+  "bin_seconds": 1.0,
+  "bin_sample_rate_hz": 1.0,
   "window_size": 10,
-  "sample_rate_hz": 10.0,
+  "window_seconds": 10.0,
   "prediction_hz": 1.0,
+  "sample_rate_hz": 1.0,
+  "notes": [
+    "Each of the 10 model timesteps is a 1-second mean of 10 raw 10 Hz samples.",
+    "The full input window covers 10 seconds of history and the model emits one",
+    "prediction per second. Feeding raw 10 Hz samples straight into the 10-slot",
+    "buffer would collapse the window from 10 s to 1 s, which is not the",
+    "distribution the network was trained on."
+  ],
   "heads": {
     "displacement": "Velocity delta (m/s) with kinematic residual connection",
     "orientation": "Yaw rate (rad/s)",

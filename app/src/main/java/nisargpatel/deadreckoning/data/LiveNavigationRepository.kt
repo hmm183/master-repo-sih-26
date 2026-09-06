@@ -46,6 +46,7 @@ import nisargpatel.deadreckoning.fusion.FusedVehicleState
 import nisargpatel.deadreckoning.fusion.HeadingPolicy
 import nisargpatel.deadreckoning.fusion.MapConstraintConfig
 import nisargpatel.deadreckoning.fusion.NonHolonomicConfig
+import nisargpatel.deadreckoning.fusion.TurningConservatismConfig
 import nisargpatel.deadreckoning.fusion.VehicleAlignmentCalibrator
 import nisargpatel.deadreckoning.fusion.VehicleFusionEkf
 import nisargpatel.deadreckoning.matching.HiddenMarkovRoadMatcher
@@ -117,7 +118,14 @@ class LiveNavigationRepository(
     private val fusion = VehicleFusionEkf(
         headingPolicy = HeadingPolicy.GYRO_WITH_MODEL_UPDATE,
         nonHolonomic = NonHolonomicConfig(),
-        mapConstraint = MapConstraintConfig()
+        mapConstraint = MapConstraintConfig(),
+        // Sharp turns and roundabouts are PINO-DR v3's dominant failure mode in the
+        // offline benchmark (>75 percent drift). Until a retrain with a yaw-residual
+        // head lands, the fusion layer distrusts the model more during hard-turn
+        // windows and leans on the non-holonomic constraint instead. Off by default in
+        // the EKF itself so unit tests and older configurations see no change; enabled
+        // here for the runtime path.
+        turningConservatism = TurningConservatismConfig.ENABLED
     )
     private val alignmentCalibrator = VehicleAlignmentCalibrator()
     /**
@@ -709,7 +717,11 @@ class LiveNavigationRepository(
             forwardUncertaintyMeters = if (isStationary) 0.05 else 0.3,
             lateralUncertaintyMeters = if (isStationary) 0.05 else 0.2,
             headingUncertaintyDegrees = if (isStationary) 0.1 else 0.8,
-            predictionHz = 5.0
+            // PINO-DR v3 emits one prediction per second on the corrected 1 Hz bin
+            // schedule; between predictions the fusion EKF propagates heading with gyro
+            // and coasts speed on the last estimate.
+            predictionHz = (pinoModel?.predictionHz ?: prediction.stepIntervalSeconds
+                .takeIf { it > 0f }?.let { 1.0 / it } ?: 1.0)
         )
 
         if (hasFreshGnss()) {
@@ -735,12 +747,17 @@ class LiveNavigationRepository(
 
         val stepForwardMeters = if (isStationary) 0.0 else prediction.stepForwardMeters.toDouble()
         val stepHeadingDeltaRadians = if (isStationary) 0.0 else prediction.stepHeadingDeltaRadians.toDouble()
+        // The prediction reports the exact interval it covers. Feeding a fixed 0.2 s
+        // here (as the previous 5 Hz implementation did) while the model actually
+        // integrates over 1 s would fold a 5x undercount into every window.
+        val stepIntervalSeconds = prediction.stepIntervalSeconds.toDouble()
+            .coerceAtLeast(0.05)
 
         val fused = fusion.predict(
             forwardMeters = stepForwardMeters,
             lateralMeters = 0.0,
             headingDeltaRadians = stepHeadingDeltaRadians,
-            intervalSeconds = 0.2
+            intervalSeconds = stepIntervalSeconds
         ) ?: return
 
         if (outageStartedAtMs == 0L) {

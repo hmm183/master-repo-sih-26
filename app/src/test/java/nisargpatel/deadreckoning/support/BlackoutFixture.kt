@@ -123,6 +123,7 @@ object BlackoutFixture {
         val windowSamples: Int get() = payload.contract.window_samples
         val spanSeconds: Double get() = payload.contract.window_span_seconds
         val sampleIntervalSeconds: Double get() = 1.0 / payload.contract.sample_rate_hz
+        val totalRawSamples: Int get() = samples.size / SAMPLE_CHANNELS
 
         /**
          * Build one model input window.
@@ -146,6 +147,53 @@ object BlackoutFixture {
                 }
                 for (channel in 3 until 6) {
                     out[target + channel] = samples[base + channel]
+                }
+            }
+            return out
+        }
+
+        /**
+         * Phone-frame proxies fed to PINO-DR v3 when vehicle-frame alignment is not
+         * available at runtime, in the same order runtime picks them:
+         * `[a_fwd = accelY, w_yaw = gyroZ, a_lat = accelX]`.
+         *
+         * This is deliberately a proxy rather than an oracle. The training pipeline used
+         * CAN/ECU-derived vehicle-frame channels this side of the review cannot supply,
+         * so the ablation faithfully reproduces what the phone would feed the model in
+         * the field while alignment has not converged. Callers wanting a calibrated
+         * comparison can substitute [rawGyro] with the yaw-rate channel identified by
+         * [Payload.gyroCalibration].
+         *
+         * Linear acceleration channels have gravity removed by the exporter, matching
+         * the runtime that strips gravity through the platform TYPE_GRAVITY vector.
+         */
+        fun pinoProxySample(sampleIndex: Int): FloatArray {
+            require(sampleIndex in 0 until totalRawSamples) {
+                "sample index $sampleIndex out of range [0, $totalRawSamples)"
+            }
+            val base = sampleIndex * SAMPLE_CHANNELS
+            return floatArrayOf(
+                samples[base + 1], // a_fwd  proxy: accelY (linear, gravity removed)
+                samples[base + 5], // w_yaw  proxy: gyroZ
+                samples[base + 0]  // a_lat  proxy: accelX (linear, gravity removed)
+            )
+        }
+
+        /** Yaw-rate channel at `sampleIndex`, using the fixture's calibrated gyro column. */
+        fun calibratedYawRate(sampleIndex: Int): Float {
+            val calibration = payload.gyroCalibration
+            val base = sampleIndex * SAMPLE_CHANNELS + 3 + calibration.channel
+            return (samples[base] * calibration.scale).toFloat()
+        }
+
+        /** Yaw rate at every raw sample from `startSample`, inclusive, for `count` samples. */
+        fun gyroYawRatesRaw(startSample: Int, count: Int, useCalibration: Boolean = true): DoubleArray {
+            val out = DoubleArray(count)
+            for (i in 0 until count) {
+                out[i] = if (useCalibration) {
+                    calibratedYawRate(startSample + i).toDouble()
+                } else {
+                    samples[(startSample + i) * SAMPLE_CHANNELS + 5].toDouble()
                 }
             }
             return out

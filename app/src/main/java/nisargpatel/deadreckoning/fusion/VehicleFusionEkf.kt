@@ -108,6 +108,90 @@ data class MapConstraintConfig(
     }
 }
 
+/**
+ * Turning-scenario conservatism. When the model reports a hard turn, lean harder on
+ * physics (the non-holonomic constraint already in place) and less on the model's own
+ * heading output.
+ *
+ * ## Why this exists
+ *
+ * The offline PINO-DR v3 benchmark ranks configurations very differently by scenario.
+ * Motorway drift lands near 3 percent of distance; sharp turns and roundabouts land at
+ * 76-81 percent, and those turns are the majority of the held-out sequences AND the
+ * geometry where GNSS actually drops (tunnels, multi-storey car parks). The trained
+ * model shares a pooled context vector between its velocity and orientation heads with
+ * no explicit tie-in between them, so on hard turns the heading can drift arbitrarily
+ * far from what the physical constraint allows.
+ *
+ * A retrain that adds a yaw residual head or shorter bins is the correct long-term
+ * fix. Until then, the filter can be told to distrust the model more when the model
+ * itself reports a hard turn:
+ *
+ *  - The non-holonomic constraint's lateral gain ramps up from
+ *    [NonHolonomicConfig.lateralGain] toward [boostedLateralGain] as the observed yaw
+ *    rate climbs past [highYawRateRadPerSec], because a hard-turning car really does
+ *    stay along its own heading and a large sideslip almost certainly means the model
+ *    is wrong rather than the car is drifting.
+ *  - The [HeadingPolicy.GYRO_WITH_MODEL_UPDATE] measurement gain scales down by
+ *    [headingMeasurementDampen] over the same range, so the model gets less say in
+ *    heading when it is most likely to be wrong about it.
+ *
+ * Off by default so existing tests and callers see no change. Enable it explicitly
+ * from the PINO consumer path, where the failure mode was measured.
+ *
+ * @param highYawRateRadPerSec yaw rate above which the gate is fully engaged. 0.35 is
+ *   roughly a 20 deg/s turn, which corresponds to a fairly tight roundabout entry.
+ *   Below [lowYawRateRadPerSec] the gate is off; between the two the effect ramps
+ *   linearly so a moderately turning drive does not chatter across the boundary.
+ * @param lowYawRateRadPerSec yaw rate below which the gate is a no-op.
+ * @param boostedLateralGain lateral gain the non-holonomic constraint uses when the
+ *   gate is fully engaged. 0.95 is a strong pull that still leaves headroom for a
+ *   physically real sideslip in extreme weather.
+ * @param headingMeasurementDampen factor applied to the heading measurement gain when
+ *   the gate is fully engaged, so 0.5 means the model's heading correction is halved.
+ */
+data class TurningConservatismConfig(
+    val enabled: Boolean = false,
+    val highYawRateRadPerSec: Double = 0.35,
+    val lowYawRateRadPerSec: Double = 0.10,
+    val boostedLateralGain: Double = 0.95,
+    val headingMeasurementDampen: Double = 0.5
+) {
+    init {
+        require(lowYawRateRadPerSec < highYawRateRadPerSec) {
+            "lowYawRateRadPerSec ($lowYawRateRadPerSec) must be strictly less than " +
+                "highYawRateRadPerSec ($highYawRateRadPerSec)"
+        }
+        require(boostedLateralGain in 0.0..1.0) {
+            "boostedLateralGain $boostedLateralGain must be in [0, 1]"
+        }
+        require(headingMeasurementDampen in 0.0..1.0) {
+            "headingMeasurementDampen $headingMeasurementDampen must be in [0, 1]"
+        }
+    }
+
+    /**
+     * How engaged the gate is for an observed yaw rate, in `[0, 1]`. 0 means fully off,
+     * 1 means fully engaged. Between the low and high thresholds the response is
+     * linear so a slightly-turning stretch does not oscillate.
+     */
+    internal fun engagement(yawRateRadPerSec: Double): Double {
+        if (!enabled) return 0.0
+        val magnitude = kotlin.math.abs(yawRateRadPerSec)
+        if (magnitude <= lowYawRateRadPerSec) return 0.0
+        if (magnitude >= highYawRateRadPerSec) return 1.0
+        val span = highYawRateRadPerSec - lowYawRateRadPerSec
+        return ((magnitude - lowYawRateRadPerSec) / span).coerceIn(0.0, 1.0)
+    }
+
+    companion object {
+        val DISABLED = TurningConservatismConfig(enabled = false)
+
+        /** Reasonable defaults for consumers that want the gate on without picking numbers. */
+        val ENABLED = TurningConservatismConfig(enabled = true)
+    }
+}
+
 /** Outcome of a map-constraint update, for diagnostics and for deciding what to display. */
 data class MapConstraintResult(
     val applied: Boolean,
@@ -138,7 +222,8 @@ data class MapConstraintResult(
 class VehicleFusionEkf(
     private val headingPolicy: HeadingPolicy = HeadingPolicy.GYRO_WITH_MODEL_UPDATE,
     private val nonHolonomic: NonHolonomicConfig = NonHolonomicConfig(),
-    private val mapConstraint: MapConstraintConfig = MapConstraintConfig()
+    private val mapConstraint: MapConstraintConfig = MapConstraintConfig(),
+    private val turningConservatism: TurningConservatismConfig = TurningConservatismConfig.DISABLED
 ) {
     private companion object {
         /** Weight applied to the model-versus-gyro heading disagreement. */
@@ -203,6 +288,16 @@ class VehicleFusionEkf(
 
     /** Number of windows where the constraint was actually applied. */
     var nonHolonomicUpdates = 0
+        private set
+
+    /**
+     * Number of windows where the turning-conservatism gate contributed any boost, i.e.
+     * where the observed yaw rate exceeded [TurningConservatismConfig.lowYawRateRadPerSec].
+     * Exposed so diagnostic prints can distinguish "gate is off" from "gate is on but
+     * never engages" from "gate engages every window", each of which points at a
+     * different tuning problem.
+     */
+    var turningConservatismEngagements = 0
         private set
 
     /** Last cross-track correction the map constraint applied, metres. */
@@ -270,13 +365,21 @@ class VehicleFusionEkf(
         // Displacement is expressed in the frame at the START of the window.
         val rotationHeading = headingAtWindowStartRadians
 
+        // How aggressively the turning gate should engage this window. The model's own
+        // reported yaw rate is what triggers it, because the gate is a hedge against the
+        // model being wrong precisely when it says the vehicle is turning hard.
+        val safeInterval = intervalSeconds.coerceAtLeast(1e-3)
+        val observedYawRate = headingDeltaRadians / safeInterval
+        val turningEngagement = turningConservatism.engagement(observedYawRate)
+
         val constrainedLateral = applyNonHolonomicConstraint(
             forwardMeters = forwardMeters,
             lateralMeters = lateralMeters,
-            headingDeltaRadians = headingDeltaRadians
+            headingDeltaRadians = headingDeltaRadians,
+            turningEngagement = turningEngagement
         )
 
-        resolveHeading(headingDeltaRadians)
+        resolveHeading(headingDeltaRadians, turningEngagement)
 
         val north = forwardMeters * cos(rotationHeading) - constrainedLateral * sin(rotationHeading)
         val east = forwardMeters * sin(rotationHeading) + constrainedLateral * cos(rotationHeading)
@@ -350,7 +453,8 @@ class VehicleFusionEkf(
     private fun applyNonHolonomicConstraint(
         forwardMeters: Double,
         lateralMeters: Double,
-        headingDeltaRadians: Double
+        headingDeltaRadians: Double,
+        turningEngagement: Double = 0.0
     ): Double {
         lastNonHolonomicCorrectionMeters = 0.0
         if (!nonHolonomic.enabled) return lateralMeters
@@ -359,7 +463,20 @@ class VehicleFusionEkf(
         val impliedLateral = forwardMeters * ratio
 
         val sideslip = lateralMeters - impliedLateral
-        val correction = (-sideslip * nonHolonomic.lateralGain)
+        // Ramp the gain from the baseline toward the boosted value as the turning gate
+        // engages. When turningEngagement is 0 this is exactly nonHolonomic.lateralGain,
+        // so the disabled-by-default case does not change any existing behaviour.
+        val engagement = turningEngagement.coerceIn(0.0, 1.0)
+        val effectiveGain = if (engagement <= 0.0) {
+            nonHolonomic.lateralGain
+        } else {
+            val boosted = turningConservatism.boostedLateralGain
+                .coerceAtLeast(nonHolonomic.lateralGain)
+            nonHolonomic.lateralGain + engagement * (boosted - nonHolonomic.lateralGain)
+        }
+        if (engagement > 0.0) turningConservatismEngagements++
+
+        val correction = (-sideslip * effectiveGain)
             .coerceIn(-nonHolonomic.maxCorrectionMeters, nonHolonomic.maxCorrectionMeters)
 
         lastNonHolonomicCorrectionMeters = correction
@@ -385,7 +502,10 @@ class VehicleFusionEkf(
      * Applies the heading policy for one completed window. Exactly one rotational
      * source reaches [headingRadians].
      */
-    private fun resolveHeading(modelHeadingDeltaRadians: Double) {
+    private fun resolveHeading(
+        modelHeadingDeltaRadians: Double,
+        turningEngagement: Double = 0.0
+    ) {
         lastHeadingInnovationRadians = modelHeadingDeltaRadians - gyroIntegratedThisWindowRadians
 
         when (headingPolicy) {
@@ -401,10 +521,16 @@ class VehicleFusionEkf(
                 if (abs(lastHeadingInnovationRadians) > MAX_HEADING_INNOVATION_RADIANS) {
                     rejectedHeadingUpdates++
                 } else {
+                    // Dampen the model's heading correction when the turning gate is
+                    // engaged: on hard turns the model is the least reliable source of
+                    // heading, so gyro should carry more of the load.
+                    val engagement = turningEngagement.coerceIn(0.0, 1.0)
+                    val gainScale = 1.0 - engagement * (1.0 - turningConservatism.headingMeasurementDampen)
+                    val effectiveGain = HEADING_MEASUREMENT_GAIN * gainScale
                     headingRadians = normalizeRadians(
-                        headingRadians + HEADING_MEASUREMENT_GAIN * lastHeadingInnovationRadians
+                        headingRadians + effectiveGain * lastHeadingInnovationRadians
                     )
-                    headingVariance *= 1.0 - HEADING_MEASUREMENT_GAIN * 0.5
+                    headingVariance *= 1.0 - effectiveGain * 0.5
                 }
             }
         }

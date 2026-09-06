@@ -155,6 +155,44 @@ data class PreprocessingSpec(
                 "gyro_ch0", "gyro_ch1", "gyro_ch2"
             )
         )
+
+        /**
+         * PINO-DR v3 (Physics-Informed Neural Operator for Dead Reckoning).
+         *
+         * The training pipeline downsamples raw 10 Hz IMU + ECU into 1 Hz bins by taking
+         * the arithmetic mean of every 10 raw samples, then feeds a rolling 10-bin window
+         * to the model and steps forward one bin at a time. Every model "timestep" is
+         * therefore a 1-second average, the full input window spans 10 seconds of history,
+         * and one prediction is emitted per second.
+         *
+         * The four channels are the vehicle-frame forward acceleration, yaw rate,
+         * measured lateral acceleration, and previous-second velocity. `w_yaw` is a rate
+         * about the vehicle Down axis, not the raw Android `gyroZ`. The runtime falls
+         * back to phone-frame proxies (`accelY`, `gyroZ`, `accelX`) when vehicle-frame
+         * alignment is not confident, which is a materially different input distribution
+         * and is documented rather than silently applied.
+         */
+        val PINO_V3 = PreprocessingSpec(
+            version = "pino-v3",
+            sampleRateHz = 1,
+            windowSamples = 10,
+            strideSamples = 1,
+            frame = ImuFrame.VEHICLE_FRD,
+            gravity = GravityHandling.REMOVED,
+            gyroOrder = GyroChannelOrder.VEHICLE_YAW_PITCH_ROLL,
+            channelNames = listOf(
+                "a_fwd", "w_yaw", "a_lat_measured", "v_prev"
+            )
+        )
+
+        /**
+         * Raw IMU rate that PINO-DR v3 expects to be pre-averaged from.
+         *
+         * The spec's own [sampleRateHz] is the model-facing rate (1 Hz after averaging),
+         * so this constant is kept alongside it. The engine averages `PINO_V3_RAW_SAMPLE_RATE_HZ /
+         * PINO_V3.sampleRateHz = 10` raw samples per bin.
+         */
+        const val PINO_V3_RAW_SAMPLE_RATE_HZ = 10
     }
 }
 
