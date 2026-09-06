@@ -10,4 +10,6 @@ class AnalyticsViewModel(
 ) : ViewModel() {
 
     val analyticsState: StateFlow<AnalyticsState> = repository.analyticsState
+    val navigationState: StateFlow<nisargpatel.deadreckoning.domain.state.NavigationState> = repository.navigationState
+    val gnssState: StateFlow<nisargpatel.deadreckoning.domain.state.GNSSState> = repository.gnssState
 }

@@ -1,13 +1,21 @@
 package nisargpatel.deadreckoning.ui.navigation
 
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -29,8 +37,8 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector?
     object Home : Screen("home", "Status", Icons.Default.Dashboard)
     object Navigation : Screen("navigation", "Drive", Icons.Default.Navigation)
     object Intelligence : Screen("intelligence", "Models", Icons.Default.Psychology)
-    object Analytics : Screen("analytics", "Metrics", Icons.Default.Analytics)
-    object Sessions : Screen("sessions", "Trips", Icons.Default.History)
+    object Analytics : Screen("analytics", "Metrics", Icons.Default.Leaderboard)
+    object Sessions : Screen("sessions", "Trips", Icons.Default.Schedule)
     object Settings : Screen("settings", "Systems", Icons.Default.Tune)
 
     // Technical Secondary Screens
@@ -70,33 +78,85 @@ fun IDRAppShell() {
         Scaffold(
             bottomBar = {
                 if (showBottomBar) {
-                    NavigationBar(
-                        containerColor = AutomotiveSurfaceBg,
-                        tonalElevation = 2.dp
+                    Surface(
+                        color = Color.White,
+                        shadowElevation = 8.dp,
+                        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        bottomNavItems.forEach { screen ->
-                            val selected = currentRoute == screen.route
-                            NavigationBarItem(
-                                icon = { Icon(screen.icon!!, contentDescription = screen.title) },
-                                label = { Text(screen.title, fontSize = 10.sp) },
-                                selected = selected,
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = PurpleAI,
-                                    selectedTextColor = PurpleAI,
-                                    indicatorColor = PurpleAI.copy(alpha = 0.12f),
-                                    unselectedIconColor = TextSecondary,
-                                    unselectedTextColor = TextSecondary
-                                ),
-                                onClick = {
-                                    navController.navigate(screen.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) {
-                                            saveState = true
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceAround,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            bottomNavItems.forEach { screen ->
+                                val selected = currentRoute == screen.route
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null
+                                        ) {
+                                            if (currentRoute != screen.route) {
+                                                navController.navigate(screen.route) {
+                                                    popUpTo(Screen.Home.route) {
+                                                        saveState = true
+                                                    }
+                                                    launchSingleTop = true
+                                                    restoreState = true
+                                                }
+                                            }
                                         }
-                                        launchSingleTop = true
-                                        restoreState = true
+                                ) {
+                                    if (selected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .background(
+                                                    color = Color(0xFF3B82F6),
+                                                    shape = RoundedCornerShape(16.dp)
+                                                )
+                                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = screen.icon!!,
+                                                contentDescription = screen.title,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = screen.title,
+                                            color = Color(0xFF2563EB),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = screen.icon!!,
+                                                contentDescription = screen.title,
+                                                tint = Color(0xFF64748B),
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = screen.title,
+                                            color = Color(0xFF64748B),
+                                            fontWeight = FontWeight.Medium,
+                                            fontSize = 11.sp
+                                        )
                                     }
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -124,7 +184,12 @@ fun IDRAppShell() {
                 // 6 Main Screens with Screen-Specific ViewModels
                 composable(Screen.Home.route) {
                     val viewModel = viewModel<HomeViewModel> { HomeViewModel(repository) }
-                    HomeScreen(viewModel = viewModel, onStartNavClicked = { navController.navigate(Screen.Navigation.route) })
+                    HomeScreen(
+                        viewModel = viewModel,
+                        onStartNavClicked = { navController.navigate(Screen.Navigation.route) },
+                        onSettingsClicked = { navController.navigate(Screen.Settings.route) },
+                        onModeClicked = { navController.navigate(Screen.Diagnostics.route) }
+                    )
                 }
                 composable(Screen.Navigation.route) {
                     val viewModel = viewModel<NavigationViewModel> { NavigationViewModel(repository) }

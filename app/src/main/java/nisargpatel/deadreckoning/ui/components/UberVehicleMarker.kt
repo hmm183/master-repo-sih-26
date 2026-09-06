@@ -45,46 +45,101 @@ object UberVehicleMarker {
         mapView.invalidate()
     }
 
+    fun updateVehicleHeading(
+        mapView: MapView,
+        headingDegrees: Double
+    ) {
+        val carMarker = mapView.overlays.filterIsInstance<Marker>().firstOrNull { it.id == "uber_vehicle_car_marker" }
+        if (carMarker != null) {
+            val currentRot = carMarker.rotation
+            val targetRot = headingDegrees.toFloat()
+            if (kotlin.math.abs(currentRot - targetRot) > 0.4f) {
+                carMarker.rotation = targetRot
+                mapView.postInvalidate()
+            }
+        }
+    }
+
     private fun createVehicleCarBitmap(context: Context): Drawable {
-        val width = 64
-        val height = 110
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val size = 160
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
+        val cx = size / 2f
+        val cy = size / 2f
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        // Shadow under car
-        paint.color = Color.parseColor("#40000000")
-        canvas.drawRoundRect(8f, 12f, width - 8f, height - 4f, 16f, 16f, paint)
+        // 1. Soft Blue Location Halo
+        paint.style = Paint.Style.FILL
+        paint.color = Color.parseColor("#263B82F6")
+        canvas.drawCircle(cx, cy, 52f, paint)
 
-        // Car Body - Dark Metallic Charcoal / Uber Blue Accent
-        paint.color = Color.parseColor("#121212")
-        canvas.drawRoundRect(10f, 10f, width - 10f, height - 10f, 18f, 18f, paint)
+        paint.color = Color.parseColor("#153B82F6")
+        canvas.drawCircle(cx, cy, 64f, paint)
 
-        // Car Roof / Top
-        paint.color = Color.parseColor("#276EF1")
-        canvas.drawRoundRect(16f, 28f, width - 16f, height - 28f, 12f, 12f, paint)
+        // 2. Forward Radar / Navigation Field of View Beam
+        val fovPath = Path().apply {
+            moveTo(cx - 10f, cy - 20f)
+            lineTo(cx - 45f, 4f)
+            quadTo(cx, 0f, cx + 45f, 4f)
+            lineTo(cx + 10f, cy - 20f)
+            close()
+        }
+        val fovShader = android.graphics.LinearGradient(
+            cx, cy - 20f, cx, 0f,
+            Color.parseColor("#553B82F6"),
+            Color.parseColor("#083B82F6"),
+            android.graphics.Shader.TileMode.CLAMP
+        )
+        val fovPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = fovShader
+            style = Paint.Style.FILL
+        }
+        canvas.drawPath(fovPath, fovPaint)
 
-        // Front Windshield
-        paint.color = Color.parseColor("#80E0F7")
+        // 3. Car Shadow
+        paint.shader = null
+        paint.color = Color.parseColor("#44000000")
+        canvas.drawRoundRect(cx - 18f, cy - 28f, cx + 18f, cy + 34f, 14f, 14f, paint)
+
+        // 4. Car Body (Dark Slate Blue)
+        paint.color = Color.parseColor("#0F172A")
+        canvas.drawRoundRect(cx - 16f, cy - 30f, cx + 16f, cy + 32f, 12f, 12f, paint)
+
+        // 5. Car Roof (Vibrant Blue)
+        paint.color = Color.parseColor("#2563EB")
+        canvas.drawRoundRect(cx - 12f, cy - 12f, cx + 12f, cy + 18f, 8f, 8f, paint)
+
+        // 6. Windshield (Front Light Cyan/Blue)
+        paint.color = Color.parseColor("#93C5FD")
         val frontGlass = Path().apply {
-            moveTo(18f, 32f)
-            lineTo(width - 18f, 32f)
-            lineTo(width - 20f, 44f)
-            lineTo(20f, 44f)
+            moveTo(cx - 11f, cy - 13f)
+            lineTo(cx + 11f, cy - 13f)
+            lineTo(cx + 9f, cy - 5f)
+            lineTo(cx - 9f, cy - 5f)
             close()
         }
         canvas.drawPath(frontGlass, paint)
 
-        // Headlights - Glowing Mint Green
-        paint.color = Color.parseColor("#10B981")
-        canvas.drawCircle(18f, 14f, 5f, paint)
-        canvas.drawCircle(width - 18f, 14f, 5f, paint)
+        // Rear glass
+        val rearGlass = Path().apply {
+            moveTo(cx - 10f, cy + 19f)
+            lineTo(cx + 10f, cy + 19f)
+            lineTo(cx + 8f, cy + 13f)
+            lineTo(cx - 8f, cy + 13f)
+            close()
+        }
+        canvas.drawPath(rearGlass, paint)
 
-        // Rear Taillights - Bright Red
+        // 7. Headlights (Bright Cyan / White-Blue)
+        paint.color = Color.parseColor("#38BDF8")
+        canvas.drawCircle(cx - 11f, cy - 27f, 3.5f, paint)
+        canvas.drawCircle(cx + 11f, cy - 27f, 3.5f, paint)
+
+        // 8. Taillights (Red)
         paint.color = Color.parseColor("#EF4444")
-        canvas.drawRect(16f, height - 14f, 26f, height - 10f, paint)
-        canvas.drawRect(width - 26f, height - 14f, width - 16f, height - 10f, paint)
+        canvas.drawRoundRect(cx - 14f, cy + 29f, cx - 8f, cy + 32f, 2f, 2f, paint)
+        canvas.drawRoundRect(cx + 8f, cy + 29f, cx + 14f, cy + 32f, 2f, 2f, paint)
 
         return BitmapDrawable(context.resources, bitmap)
     }

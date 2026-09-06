@@ -16,11 +16,13 @@ interface NavigationRepository {
     val analyticsState: StateFlow<AnalyticsState>
     val sessionState: StateFlow<SessionState>
     val navigationEvents: SharedFlow<NavigationEvent>
+    val activeRouteInfo: StateFlow<RouteInfo>
 
     fun startNavigation()
     fun stopNavigation()
     fun startGnssMonitoring()
     fun setActiveRoute(route: RouteInfo)
+    fun clearActiveRoute()
     suspend fun findOfflineRoute(start: GeoPoint, end: GeoPoint, destinationName: String): RouteInfo?
 
 }

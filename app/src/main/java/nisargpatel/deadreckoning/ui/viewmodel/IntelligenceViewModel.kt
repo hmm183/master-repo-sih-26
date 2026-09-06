@@ -13,6 +13,7 @@ import nisargpatel.deadreckoning.domain.repository.NavigationRepository
 import nisargpatel.deadreckoning.domain.state.AIState
 import nisargpatel.deadreckoning.domain.state.NavigationEvent
 import nisargpatel.deadreckoning.domain.state.NavigationState
+import nisargpatel.deadreckoning.domain.state.SensorState
 
 class IntelligenceViewModel(
     private val repository: NavigationRepository
@@ -24,6 +25,7 @@ class IntelligenceViewModel(
 
     val aiState: StateFlow<AIState> = repository.aiState
     val navigationState: StateFlow<NavigationState> = repository.navigationState
+    val sensorState: StateFlow<SensorState> = repository.sensorState
 
     private val _potholeAlert = MutableStateFlow<String?>(null)
     val potholeAlert: StateFlow<String?> = _potholeAlert.asStateFlow()
