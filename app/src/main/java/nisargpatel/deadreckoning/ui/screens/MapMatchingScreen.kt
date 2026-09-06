@@ -40,15 +40,18 @@ fun MapMatchingScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Icon(imageVector = Icons.Default.AltRoute, contentDescription = "Map Matching", tint = PrimaryBlue, modifier = Modifier.size(28.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
-                    Text(text = "MAP MATCHING ENGINE", color = PrimaryBlue, fontWeight = FontWeight.Black, fontSize = 18.sp, letterSpacing = 1.sp)
-                    Text(text = "Road Network Vector Projection", color = TextSecondary, fontSize = 12.sp)
+                    Text(text = "MAP MATCHING", color = PrimaryBlue, fontWeight = FontWeight.Black, fontSize = 16.sp, letterSpacing = 0.5.sp)
+                    Text(text = "OSM Topology & HMM Engine", color = TextSecondary, fontSize = 11.sp)
                 }
             }
-            ConfidenceIndicator(percentage = matchingState.matchConfidencePercentage)
+            ConfidenceIndicator(percentage = matchingState.matchConfidencePercentage, label = "")
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -66,7 +69,7 @@ fun MapMatchingScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(text = "Distance from Road Axis", color = TextSecondary, fontSize = 12.sp)
-                    Text(text = "${matchingState.distanceFromRoadMeters} m", color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text(text = String.format(java.util.Locale.US, "%.1f m", matchingState.distanceFromRoadMeters), color = PrimaryBlue, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }

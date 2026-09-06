@@ -65,6 +65,7 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
     private var packages = emptyList<OfflineMapPackage>()
     private var segments = load()
     private var spatialIndex = buildSpatialIndex(segments)
+    private var wayAdjacency = buildWayAdjacency(segments)
     private val _state = MutableStateFlow(snapshot())
     val state: StateFlow<OfflineRoadNetworkState> = _state.asStateFlow()
 
@@ -86,6 +87,7 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
         segments = (segments + parsed.segments).distinctBy { it.wayId }
         restrictions = (restrictions + parsed.restrictions).distinct()
         spatialIndex = buildSpatialIndex(segments)
+        wayAdjacency = buildWayAdjacency(segments)
         packages = (packages.filterNot { it.fileName == file.name } + OfflineMapPackage(file.nameWithoutExtension, displayName, file.name, file.length(), System.currentTimeMillis(), parsed.segments.size)).takeLast(8)
         persist()
         _state.value = snapshot(false, "${segments.size} roads indexed from $displayName")
@@ -144,7 +146,7 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
     fun clear() {
         networkFile.delete()
         packageDir.listFiles()?.forEach(File::delete)
-        segments = emptyList(); restrictions = emptyList(); packages = emptyList(); spatialIndex = emptyMap()
+        segments = emptyList(); restrictions = emptyList(); packages = emptyList(); spatialIndex = emptyMap(); wayAdjacency = emptyMap()
         _state.value = snapshot(false, "Regional road packages cleared")
     }
 
@@ -172,6 +174,46 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
     private fun buildSpatialIndex(source: List<RoadSegment>): Map<String, List<RoadSegment>> = source.flatMap { segment ->
         segment.points.map { point -> cellId(point) to segment }
     }.groupBy({ it.first }, { it.second }).mapValues { (_, items) -> items.distinctBy { it.wayId } }
+
+    private fun buildWayAdjacency(source: List<RoadSegment>): Map<Long, Set<Long>> {
+        val nodeToWays = HashMap<Long, MutableSet<Long>>()
+        source.forEach { seg ->
+            seg.nodeIds.forEach { nodeId ->
+                nodeToWays.getOrPut(nodeId) { mutableSetOf() }.add(seg.wayId)
+            }
+        }
+        val adjacency = HashMap<Long, MutableSet<Long>>()
+        source.forEach { seg ->
+            val neighbors = adjacency.getOrPut(seg.wayId) { mutableSetOf() }
+            seg.nodeIds.forEach { nodeId ->
+                nodeToWays[nodeId]?.let { sharingWays ->
+                    neighbors.addAll(sharingWays)
+                }
+            }
+        }
+        return adjacency
+    }
+
+    /**
+     * Determines topological graph distance (in hops) between two OSM ways:
+     *  0: Same way
+     *  1: Directly adjacent (share at least one intersection node)
+     *  2: 2-hop connected (share an intermediate connected neighbor way)
+     * -1: Disconnected or distance > 2 hops (e.g. parallel road, elevated flyover, opposite riverbank)
+     */
+    fun getTopologicalHops(wayA: Long, wayB: Long): Int {
+        if (wayA == 0L || wayB == 0L) return 0 // synthetic or unassigned, neutral
+        if (wayA == wayB) return 0
+        val neighborsA = wayAdjacency[wayA] ?: return -1
+        if (neighborsA.contains(wayB)) return 1
+        val neighborsB = wayAdjacency[wayB] ?: return -1
+        for (neighbor in neighborsA) {
+            if (neighborsB.contains(neighbor)) return 2
+        }
+        return -1
+    }
+
+    fun areWaysConnected(wayA: Long, wayB: Long): Boolean = getTopologicalHops(wayA, wayB) >= 0
 
     private fun nearbySegments(point: GeoPoint): List<RoadSegment> {
         val latitudeCell = (point.latitude * 100).toInt()

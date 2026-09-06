@@ -120,7 +120,14 @@ class LiveNavigationRepository(
     override val sensorState: StateFlow<SensorState> = _sensorState.asStateFlow()
     private val _gnssState = MutableStateFlow(GNSSState())
     override val gnssState: StateFlow<GNSSState> = _gnssState.asStateFlow()
-    private val _aiState = MutableStateFlow(AIState(isModelLoaded = model != null, modelVersion = model?.manifest?.deployment_status ?: "Unavailable"))
+    private val _aiState = MutableStateFlow(
+        AIState(
+            isModelLoaded = idrModel != null || model != null,
+            modelVersion = idrModel?.let { "${it.manifest.model} (${it.manifest.preprocessing_version})" }
+                ?: model?.manifest?.deployment_status
+                ?: "Unavailable"
+        )
+    )
     override val aiState: StateFlow<AIState> = _aiState.asStateFlow()
     private val _mapState = MutableStateFlow(MapState())
     override val mapState: StateFlow<MapState> = _mapState.asStateFlow()
@@ -140,6 +147,8 @@ class LiveNavigationRepository(
     private var outageStartedAtMs = 0L
     private var outageCount = 0
     private var totalOutageMs = 0L
+    private var gnssRecoveryStartedAtMs = 0L
+    private var gnssRecoveryAnchorPosition: GeoPoint? = null
     private var accumulatedDriftMeters = 0.0
     private var driftSamples = 0
     private var maxDriftMeters = 0.0
@@ -269,6 +278,7 @@ class LiveNavigationRepository(
 
     override fun stopNavigation() {
         _navigationState.value = _navigationState.value.copy(isNavigating = false)
+        roadMatcher.reset()
         finishSession()
         clearActiveRoute()
         _navigationEvents.tryEmit(NavigationEvent.NavigationStopped)
@@ -412,6 +422,10 @@ class LiveNavigationRepository(
             totalOutageMs += outageDurationMs
             lastRecoveryDurationSeconds = outageDurationMs / 1_000.0
             outageStartedAtMs = 0L
+            gnssRecoveryStartedAtMs = System.currentTimeMillis()
+            gnssRecoveryAnchorPosition = if (_navigationState.value.latitude != 0.0) {
+                GeoPoint(_navigationState.value.latitude, _navigationState.value.longitude)
+            } else null
         }
         // Use the monitor's effective accuracy, which is inflated while degraded or
         // recovering. That is what stops a doubtful first fix after an outage from
@@ -425,7 +439,28 @@ class LiveNavigationRepository(
                 ?: _navigationState.value.headingDegrees
         }
         val fused = fusion.updateGnss(position, state.speedKmh / 3.6, currentHeading, fusionAccuracy)
-        applyRouteMatch(fused.position, isDeadReckoning = false)
+
+        // Soft-landing re-convergence: smoothly blend dead-reckoning position into GNSS over 2.5s
+        val effectivePosition = if (gnssRecoveryAnchorPosition != null && gnssRecoveryStartedAtMs != 0L) {
+            val elapsedMs = System.currentTimeMillis() - gnssRecoveryStartedAtMs
+            val blendWindowMs = 2500L
+            if (elapsedMs < blendWindowMs) {
+                val progress = (elapsedMs.toDouble() / blendWindowMs).coerceIn(0.0, 1.0)
+                val alpha = (1.0 - kotlin.math.cos(progress * Math.PI)) / 2.0
+                val anchor = gnssRecoveryAnchorPosition!!
+                GeoPoint(
+                    anchor.latitude + alpha * (fused.position.latitude - anchor.latitude),
+                    anchor.longitude + alpha * (fused.position.longitude - anchor.longitude)
+                )
+            } else {
+                gnssRecoveryAnchorPosition = null
+                fused.position
+            }
+        } else {
+            fused.position
+        }
+
+        applyRouteMatch(effectivePosition, isDeadReckoning = false)
         val gnssConfidence = navigationConfidence(fused, assessment.quality)
         val finalHeading = if (fused.headingDegrees != 0.0 && state.speedKmh >= 4.0) {
             fused.headingDegrees
@@ -445,8 +480,8 @@ class LiveNavigationRepository(
             speedKmh = filteredSpeed,
             headingDegrees = finalHeading,
             accuracyMeters = fused.horizontalUncertaintyMeters,
-            latitude = fused.position.latitude,
-            longitude = fused.position.longitude,
+            latitude = effectivePosition.latitude,
+            longitude = effectivePosition.longitude,
             confidencePercentage = gnssConfidence,
             alongTrackUncertaintyMeters = fused.alongTrackUncertaintyMeters,
             crossTrackUncertaintyMeters = fused.crossTrackUncertaintyMeters,
@@ -455,8 +490,8 @@ class LiveNavigationRepository(
             outageDurationSeconds = 0
         )
         _mapState.value = _mapState.value.copy(
-            currentPosition = fused.position,
-            gnssTrajectory = (_mapState.value.gnssTrajectory + fused.position).takeLast(200)
+            currentPosition = effectivePosition,
+            gnssTrajectory = (_mapState.value.gnssTrajectory + effectivePosition).takeLast(200)
         )
         updateAnalytics()
     }
@@ -547,7 +582,13 @@ class LiveNavigationRepository(
         } else {
             lastFusionImuNs = 0L
         }
-        val seedSpeed = if (hasFreshGnss()) _gnssState.value.speedKmh / 3.6 else _aiState.value.predictedSpeedKmh / 3.6
+        val seedSpeed = if (hasFreshGnss()) {
+            _gnssState.value.speedKmh / 3.6
+        } else if (_sensorState.value.isStationary || _navigationState.value.speedKmh < 0.5) {
+            0.0
+        } else {
+            _aiState.value.predictedSpeedKmh / 3.6
+        }
 
         if (idrModel != null) {
             idrModel.addSample(
@@ -573,24 +614,34 @@ class LiveNavigationRepository(
      */
     private fun applyIdrPrediction(prediction: IdrPrediction) {
         val rawSpeedKmh = prediction.speedMps * 3.6
-        val isStationary = prediction.motionClass == MotionClass.STATIONARY || rawSpeedKmh < 0.8
+        val isHardwareStationary = _sensorState.value.isStationary
+        val isStationary = isHardwareStationary ||
+            prediction.motionClass == MotionClass.STATIONARY ||
+            rawSpeedKmh < 1.5 ||
+            (!hasFreshGnss() && _navigationState.value.speedKmh < 0.5 && rawSpeedKmh < 3.0)
+
         val speedKmh = filterVehicleSpeed(rawSpeedKmh, isStationary)
         val speedSigmaKmh = prediction.speedUncertaintyMps * 3.6
-        val speedConfidence = if (speedSigmaKmh <= 0.0) {
-            0
+        val speedConfidence = if (speedSigmaKmh <= 0.0 || isStationary) {
+            if (isStationary) 98 else 0
         } else {
             val relative = speedSigmaKmh / speedKmh.coerceAtLeast(1.0)
             ((1.0 - relative) * 100.0).toInt().coerceIn(0, 99)
         }
 
+        val currentModelVer = idrModel?.let { "${it.manifest.model} (${it.manifest.preprocessing_version})" }
+            ?: _aiState.value.modelVersion.ifBlank { "IDR-V1 Active" }
+
         _aiState.value = _aiState.value.copy(
             isActive = !hasFreshGnss(),
+            isModelLoaded = true,
+            modelVersion = currentModelVer,
             predictedSpeedKmh = speedKmh,
             speedConfidencePercentage = speedConfidence,
-            motionClassification = prediction.motionClass.label,
-            motionConfidencePercentage = prediction.motionConfidencePercentage,
+            motionClassification = if (isStationary) "Stationary" else prediction.motionClass.label,
+            motionConfidencePercentage = if (isStationary) 98 else prediction.motionConfidencePercentage,
             inferenceTimeMs = prediction.inferenceTimeMs,
-            speedUncertaintyKmh = speedSigmaKmh,
+            speedUncertaintyKmh = if (isStationary) 0.1 else speedSigmaKmh,
             forwardUncertaintyMeters = prediction.forwardUncertaintyMeters.toDouble(),
             lateralUncertaintyMeters = prediction.lateralUncertaintyMeters.toDouble(),
             headingUncertaintyDegrees = Math.toDegrees(prediction.headingUncertaintyRadians.toDouble()),
@@ -615,13 +666,21 @@ class LiveNavigationRepository(
             )
         }
 
-        fusion.updateSpeed(prediction.speedMps.toDouble(), prediction.speedUncertaintyMps.toDouble())
+        val effectiveSpeedMps = if (isStationary) 0.0 else (speedKmh / 3.6)
+        fusion.updateSpeed(effectiveSpeedMps, prediction.speedUncertaintyMps.toDouble())
+
+        // Calculate step displacement for this stride interval (0.2s = 2 samples out of 20 window samples)
+        val strideFraction = PreprocessingSpec.IDR_V1.strideSamples.toDouble() / PreprocessingSpec.IDR_V1.windowSamples.toDouble()
+        val stepIntervalSeconds = PreprocessingSpec.IDR_V1.strideSamples.toDouble() / PreprocessingSpec.IDR_V1.sampleRateHz.toDouble()
+        val stepForwardMeters = if (isStationary) 0.0 else (prediction.forwardMeters.toDouble() * strideFraction)
+        val stepLateralMeters = if (isStationary) 0.0 else (prediction.lateralMeters.toDouble() * strideFraction)
+        val stepHeadingDeltaRadians = prediction.headingDeltaRadians.toDouble() * strideFraction
 
         val fused = fusion.predict(
-            forwardMeters = prediction.forwardMeters.toDouble(),
-            lateralMeters = prediction.lateralMeters.toDouble(),
-            headingDeltaRadians = prediction.headingDeltaRadians.toDouble(),
-            intervalSeconds = PreprocessingSpec.IDR_V1.windowSpanSeconds
+            forwardMeters = stepForwardMeters,
+            lateralMeters = stepLateralMeters,
+            headingDeltaRadians = stepHeadingDeltaRadians,
+            intervalSeconds = stepIntervalSeconds
         ) ?: return
 
         if (outageStartedAtMs == 0L) {
@@ -644,9 +703,9 @@ class LiveNavigationRepository(
             speedUncertaintyKmh = fused.speedUncertaintyMps * 3.6,
             headingUncertaintyDegrees = fused.headingUncertaintyDegrees,
             outageDurationSeconds = previous.outageDurationSeconds +
-                PreprocessingSpec.IDR_V1.windowSpanSeconds.toLong().coerceAtLeast(1L),
+                stepIntervalSeconds.toLong().coerceAtLeast(1L),
             totalDistanceKm = previous.totalDistanceKm +
-                prediction.forwardMeters.coerceAtLeast(0f) / 1000.0
+                stepForwardMeters.coerceAtLeast(0.0) / 1000.0
         )
         _mapState.value = _mapState.value.copy(
             currentPosition = fused.position,
@@ -768,9 +827,23 @@ class LiveNavigationRepository(
     }
 
     private fun applyRouteMatch(position: GeoPoint, isDeadReckoning: Boolean): RouteMatch? {
+        val currentHeading = if (_navigationState.value.headingDegrees != 0.0) {
+            _navigationState.value.headingDegrees
+        } else {
+            _sensorState.value.vehicleHeadingDegrees.toDouble().takeIf { it != 0.0 }
+        }
+        val currentYawRate = _sensorState.value.vehicleGyroYaw.toDouble().takeIf { it != 0.0 }
+            ?: (_sensorState.value.gyroZ.toDouble() * (180.0 / Math.PI))
+
         val routeMatch = RouteMapMatcher.match(position, activeRoute)
         val roadCandidates = offlineRoadNetwork.match(position)
-        val hmmMatch = roadMatcher.update(position, roadCandidates)
+        val hmmMatch = roadMatcher.update(
+            observation = position,
+            candidates = roadCandidates,
+            vehicleHeadingDegrees = currentHeading,
+            vehicleYawRateDegPerSec = currentYawRate,
+            topologicalHopProvider = { wayA, wayB -> offlineRoadNetwork.getTopologicalHops(wayA, wayB) }
+        )
         val hmmRouteMatch = hmmMatch?.let {
             RouteMatch(
                 point = it.candidate.point,
@@ -779,13 +852,17 @@ class LiveNavigationRepository(
                 bearingDegrees = it.candidate.bearingDegrees
             )
         }
-        val match = routeMatch ?: hmmRouteMatch ?: roadCandidates.firstOrNull()?.let {
-            RouteMatch(
-                point = it.point,
-                distanceMeters = it.distanceMeters,
-                confidence = (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100),
-                bearingDegrees = it.bearingDegrees
-            )
+        val match = if (routeMatch != null && (routeMatch.distanceMeters <= 35.0 || roadCandidates.isEmpty())) {
+            routeMatch
+        } else {
+            hmmRouteMatch ?: routeMatch ?: roadCandidates.firstOrNull()?.let {
+                RouteMatch(
+                    point = it.point,
+                    distanceMeters = it.distanceMeters,
+                    confidence = (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100),
+                    bearingDegrees = it.bearingDegrees
+                )
+            }
         } ?: return null
         _mapMatchingState.value = MapMatchingState(
             rawPositionLat = position.latitude,
@@ -794,7 +871,8 @@ class LiveNavigationRepository(
             matchedPositionLon = match.point.longitude,
             selectedRoadName = hmmMatch?.candidate?.roadName ?: roadCandidates.firstOrNull()?.roadName ?: "Active navigation route",
             candidateRoads = if (roadCandidates.isEmpty()) listOf(CandidateRoad("Active navigation route", match.confidence)) else roadCandidates.map {
-                CandidateRoad(it.roadName, (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100))
+                val prob = if (hmmMatch != null && it.wayId == hmmMatch.candidate.wayId) hmmMatch.confidence else (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100)
+                CandidateRoad(it.roadName, prob)
             },
             matchConfidencePercentage = match.confidence,
             distanceFromRoadMeters = match.distanceMeters,

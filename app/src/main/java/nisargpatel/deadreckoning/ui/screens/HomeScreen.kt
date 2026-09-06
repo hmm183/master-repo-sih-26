@@ -113,7 +113,7 @@ fun HomeScreen(
 
         // 5. Vehicle Signal Card
         VehicleSignalCard(
-            predictedSpeedKmh = if (aiState.predictedSpeedKmh > 0.0) aiState.predictedSpeedKmh else 2.6,
+            predictedSpeedKmh = aiState.predictedSpeedKmh,
             motionClassification = if (aiState.motionClassification.isNotBlank() && aiState.motionClassification != "UNKNOWN") aiState.motionClassification else "Stationary"
         )
 
