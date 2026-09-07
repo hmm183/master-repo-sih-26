@@ -57,7 +57,7 @@ data class IdrManifest(
     val model: String,
     val preprocessing_version: String,
     val parameters: Int,
-    val sha256: String
+    val sha256: String = ""
 )
 
 /**
@@ -129,6 +129,13 @@ class IdrMotionEngine(
         }
 
         val model = context.assets.open(MODEL_ASSET).use { it.readBytes() }
+        if (manifest.sha256.isNotBlank()) {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            val computedHash = digest.digest(model).joinToString("") { "%02x".format(it) }
+            require(computedHash.equals(manifest.sha256, ignoreCase = true)) {
+                "IDR-V1 model file integrity check failed! Expected sha256: ${manifest.sha256}, computed: $computedHash"
+            }
+        }
         session = environment.createSession(model, OrtSession.SessionOptions())
         Log.i(TAG, "Loaded ${manifest.model} (${manifest.parameters} params)")
         Log.i(TAG, "Contract: ${spec.describe()}")

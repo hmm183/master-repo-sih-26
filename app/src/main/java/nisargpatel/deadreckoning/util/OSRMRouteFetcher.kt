@@ -15,6 +15,44 @@ private const val TAG = "OSRMRouteFetcher"
 
 object OSRMRouteFetcher {
 
+    data class RouteCacheKey(
+        val startLat1000: Int,
+        val startLon1000: Int,
+        val endLat1000: Int,
+        val endLon1000: Int
+    )
+
+    private val routeCache = object : LinkedHashMap<RouteCacheKey, RouteInfo>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RouteCacheKey, RouteInfo>?): Boolean {
+            return size > 30
+        }
+    }
+
+    private fun toCacheKey(start: GeoPoint, end: GeoPoint): RouteCacheKey = RouteCacheKey(
+        startLat1000 = (start.latitude * 1000.0).roundToInt(),
+        startLon1000 = (start.longitude * 1000.0).roundToInt(),
+        endLat1000 = (end.latitude * 1000.0).roundToInt(),
+        endLon1000 = (end.longitude * 1000.0).roundToInt()
+    )
+
+    fun getCachedRoute(start: GeoPoint, end: GeoPoint): RouteInfo? = synchronized(routeCache) {
+        val exactKey = toCacheKey(start, end)
+        routeCache[exactKey] ?: routeCache.values.firstOrNull { cached ->
+            cached.destinationPoint.distanceToAsDouble(end) < 75.0 &&
+                cached.sourcePoint.distanceToAsDouble(start) < 250.0
+        }
+    }
+
+    fun putCachedRoute(start: GeoPoint, end: GeoPoint, route: RouteInfo) = synchronized(routeCache) {
+        routeCache[toCacheKey(start, end)] = route
+    }
+
+    fun clearCache() = synchronized(routeCache) {
+        routeCache.clear()
+    }
+
+    val cacheSize: Int get() = synchronized(routeCache) { routeCache.size }
+
     suspend fun fetchRoute(
         start: GeoPoint,
         end: GeoPoint,
@@ -141,10 +179,12 @@ object OSRMRouteFetcher {
                         }
 
                         if (primaryRouteInfo != null) {
-                            return@withContext primaryRouteInfo.copy(
+                            val result = primaryRouteInfo.copy(
                                 alternatives = parsedAlternatives,
                                 selectedAlternativeId = "primary"
                             )
+                            putCachedRoute(start, end, result)
+                            return@withContext result
                         }
                     }
                 }
@@ -153,15 +193,23 @@ object OSRMRouteFetcher {
             }
         }
 
+        // Check offline route cache before falling back to synthesized street grid
+        val cachedRoute = getCachedRoute(start, end)
+        if (cachedRoute != null) {
+            Log.i(TAG, "Returning route from offline cache")
+            return@withContext cachedRoute
+        }
+
         // Generate street grid route with real turns & street corridors (never a straight line across buildings)
-        return@withContext generateStreetGridRoute(start, end, destinationName)
+        val generated = generateStreetGridRoute(start, end, destinationName)
+        putCachedRoute(start, end, generated)
+        return@withContext generated
     }
 
     private fun synthesizeAlternativeCorridor(basePoints: List<GeoPoint>): List<GeoPoint> {
         if (basePoints.size < 3) return basePoints
         val alt = mutableListOf<GeoPoint>()
         alt.add(basePoints.first())
-        val midIndex = basePoints.size / 2
         for (i in 1 until basePoints.size - 1) {
             val pt = basePoints[i]
             // Lateral sinusoidal bow offset

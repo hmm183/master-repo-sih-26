@@ -103,12 +103,22 @@ fun IDRAppShell() {
                                             indication = null
                                         ) {
                                             if (currentRoute != screen.route) {
-                                                navController.navigate(screen.route) {
-                                                    popUpTo(Screen.Home.route) {
-                                                        saveState = true
+                                                if (screen.route == Screen.Home.route) {
+                                                    val popped = navController.popBackStack(Screen.Home.route, inclusive = false)
+                                                    if (!popped) {
+                                                        navController.navigate(Screen.Home.route) {
+                                                            popUpTo(Screen.Home.route) { inclusive = true }
+                                                            launchSingleTop = true
+                                                        }
                                                     }
-                                                    launchSingleTop = true
-                                                    restoreState = true
+                                                } else {
+                                                    navController.navigate(screen.route) {
+                                                        popUpTo(Screen.Home.route) {
+                                                            saveState = true
+                                                        }
+                                                        launchSingleTop = true
+                                                        restoreState = true
+                                                    }
                                                 }
                                             }
                                         }
@@ -186,14 +196,39 @@ fun IDRAppShell() {
                     val viewModel = viewModel<HomeViewModel> { HomeViewModel(repository) }
                     HomeScreen(
                         viewModel = viewModel,
-                        onStartNavClicked = { navController.navigate(Screen.Navigation.route) },
-                        onSettingsClicked = { navController.navigate(Screen.Settings.route) },
+                        onStartNavClicked = {
+                            navController.navigate(Screen.Navigation.route) {
+                                popUpTo(Screen.Home.route) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        onSettingsClicked = {
+                            navController.navigate(Screen.Settings.route) {
+                                popUpTo(Screen.Home.route) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
                         onModeClicked = { navController.navigate(Screen.Diagnostics.route) }
                     )
                 }
                 composable(Screen.Navigation.route) {
                     val viewModel = viewModel<NavigationViewModel> { NavigationViewModel(repository) }
-                    LiveNavigationScreen(viewModel = viewModel)
+                    LiveNavigationScreen(
+                        viewModel = viewModel,
+                        onBackToHome = {
+                            if (!navController.popBackStack(Screen.Home.route, inclusive = false)) {
+                                navController.navigate(Screen.Home.route) {
+                                    launchSingleTop = true
+                                }
+                            }
+                        }
+                    )
                 }
                 composable(Screen.Intelligence.route) {
                     val viewModel = viewModel<IntelligenceViewModel> { IntelligenceViewModel(repository) }

@@ -1,15 +1,16 @@
 package nisargpatel.deadreckoning.data
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.osmdroid.tileprovider.cachemanager.CacheManager
 import org.osmdroid.tileprovider.modules.SqlTileWriter
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.tileprovider.tilesource.TileSourcePolicy
+import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
 import kotlin.math.cos
 
 data class OfflineMapCacheState(
@@ -23,9 +24,25 @@ data class OfflineMapCacheState(
 /** Downloads standard OSM tiles into osmdroid's persistent cache for offline reuse. */
 class OfflineMapCache(context: Context) {
     private val appContext = context.applicationContext
-    private val mapView = MapView(appContext).apply { setTileSource(TileSourceFactory.MAPNIK) }
     private val tileWriter = SqlTileWriter()
-    private val cacheManager = CacheManager(mapView, tileWriter)
+
+    // Using an explicit policy with bulk download enabled (flags = 0) so osmdroid's CacheManager doesn't reject it
+    private val cacheTileSource = XYTileSource(
+        "Mapnik",
+        0,
+        19,
+        256,
+        ".png",
+        arrayOf(
+            "https://a.tile.openstreetmap.org/",
+            "https://b.tile.openstreetmap.org/",
+            "https://c.tile.openstreetmap.org/"
+        ),
+        "© OpenStreetMap contributors",
+        TileSourcePolicy(4, 0)
+    )
+
+    private val cacheManager = CacheManager(cacheTileSource, tileWriter, 0, 19)
     private val _state = MutableStateFlow(OfflineMapCacheState(cachedBytes = cacheManager.currentCacheUsage()))
     val state: StateFlow<OfflineMapCacheState> = _state.asStateFlow()
 
@@ -40,34 +57,45 @@ class OfflineMapCache(context: Context) {
             center.longitude - longitudeDelta
         )
         _state.value = _state.value.copy(isDownloading = true, downloadedTiles = 0, totalTiles = 0, message = "Preparing offline tiles")
-        cacheManager.downloadAreaAsyncNoUI(appContext, area, 14, 16, object : CacheManager.CacheManagerCallback {
-            override fun downloadStarted() = Unit
+        try {
+            cacheManager.downloadAreaAsyncNoUI(appContext, area, 14, 16, object : CacheManager.CacheManagerCallback {
+                override fun downloadStarted() = Unit
 
-            override fun setPossibleTilesInArea(total: Int) {
-                _state.value = _state.value.copy(totalTiles = total)
-            }
+                override fun setPossibleTilesInArea(total: Int) {
+                    _state.value = _state.value.copy(totalTiles = total)
+                }
 
-            override fun updateProgress(progress: Int, currentZoomLevel: Int, zoomMin: Int, zoomMax: Int) {
-                _state.value = _state.value.copy(downloadedTiles = progress, message = "Caching zoom $currentZoomLevel")
-            }
+                override fun updateProgress(progress: Int, currentZoomLevel: Int, zoomMin: Int, zoomMax: Int) {
+                    _state.value = _state.value.copy(downloadedTiles = progress, message = "Caching zoom $currentZoomLevel")
+                }
 
-            override fun onTaskComplete() {
-                _state.value = _state.value.copy(
-                    cachedBytes = cacheManager.currentCacheUsage(),
-                    isDownloading = false,
-                    message = "Area available offline"
-                )
-            }
+                override fun onTaskComplete() {
+                    _state.value = _state.value.copy(
+                        cachedBytes = cacheManager.currentCacheUsage(),
+                        isDownloading = false,
+                        message = "Area available offline"
+                    )
+                }
 
-            override fun onTaskFailed(errors: Int) {
-                _state.value = _state.value.copy(isDownloading = false, message = "Tile download failed ($errors errors)")
-            }
-        })
+                override fun onTaskFailed(errors: Int) {
+                    _state.value = _state.value.copy(isDownloading = false, message = "Tile download failed ($errors errors)")
+                }
+            })
+        } catch (e: Throwable) {
+            Log.e("OfflineMapCache", "Failed to launch tile caching", e)
+            _state.value = _state.value.copy(isDownloading = false, message = "Cache error: ${e.message}")
+        }
     }
 
     fun clearCache() {
         if (_state.value.isDownloading) return
-        tileWriter.purgeCache()
-        _state.value = OfflineMapCacheState(cachedBytes = cacheManager.currentCacheUsage(), message = "Offline tile cache cleared")
+        try {
+            tileWriter.purgeCache()
+            _state.value = OfflineMapCacheState(cachedBytes = cacheManager.currentCacheUsage(), message = "Offline tile cache cleared")
+        } catch (e: Throwable) {
+            Log.e("OfflineMapCache", "Failed to clear cache", e)
+            _state.value = _state.value.copy(message = "Clear failed: ${e.message}")
+        }
     }
 }
+

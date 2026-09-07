@@ -3,6 +3,7 @@
   "architecture": "Conv1D-BiGRU-TemporalAttention",
   "deployment_status": "PINO-DR v3 Production",
   "preprocessing_version": "pino-v3",
+  "sha256": "13fbcd835d0807ea3ea5759add71573e96ba40f68f60780bd4e1e8ee8bb5f059",
   "parameters": 21667,
   "channels": [
     "a_fwd",

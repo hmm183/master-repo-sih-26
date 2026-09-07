@@ -1,0 +1,147 @@
+{
+  "packages": [
+    {
+      "id": "ap_vijayawada_demo",
+      "displayName": "Vijayawada Smart Corridor (Demo Package)",
+      "fileName": "default_regional_network.json",
+      "bytes": 32768,
+      "importedAtMillis": 1725657600000,
+      "segmentCount": 8
+    }
+  ],
+  "restrictions": [],
+  "segments": [
+    {
+      "wayId": 1001,
+      "name": "MG Road (Bandar Road)",
+      "highway": "primary",
+      "oneWay": false,
+      "maxSpeedKph": 50,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 4,
+      "nodeIds": [101, 102, 103, 104],
+      "points": [
+        {"latitude": 16.5062, "longitude": 80.6402},
+        {"latitude": 16.5035, "longitude": 80.6440},
+        {"latitude": 16.5000, "longitude": 80.6480},
+        {"latitude": 16.4970, "longitude": 80.6520}
+      ]
+    },
+    {
+      "wayId": 1002,
+      "name": "National Highway 16 (NH16)",
+      "highway": "motorway",
+      "oneWay": true,
+      "maxSpeedKph": 80,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 6,
+      "nodeIds": [201, 103, 202, 203],
+      "points": [
+        {"latitude": 16.5100, "longitude": 80.6450},
+        {"latitude": 16.5000, "longitude": 80.6480},
+        {"latitude": 16.4900, "longitude": 80.6510},
+        {"latitude": 16.4800, "longitude": 80.6540}
+      ]
+    },
+    {
+      "wayId": 1003,
+      "name": "Benz Circle Rotary",
+      "highway": "primary",
+      "oneWay": true,
+      "maxSpeedKph": 30,
+      "access": "yes",
+      "roundabout": true,
+      "lanes": 3,
+      "nodeIds": [301, 302, 303, 304, 301],
+      "points": [
+        {"latitude": 16.5002, "longitude": 80.6478},
+        {"latitude": 16.5003, "longitude": 80.6482},
+        {"latitude": 16.4998, "longitude": 80.6483},
+        {"latitude": 16.4997, "longitude": 80.6479},
+        {"latitude": 16.5002, "longitude": 80.6478}
+      ]
+    },
+    {
+      "wayId": 1004,
+      "name": "Eluru Road Corridor",
+      "highway": "primary",
+      "oneWay": false,
+      "maxSpeedKph": 50,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 4,
+      "nodeIds": [401, 402, 403],
+      "points": [
+        {"latitude": 16.5150, "longitude": 80.6350},
+        {"latitude": 16.5100, "longitude": 80.6420},
+        {"latitude": 16.5050, "longitude": 80.6500}
+      ]
+    },
+    {
+      "wayId": 1005,
+      "name": "Airport Approach Road",
+      "highway": "trunk",
+      "oneWay": false,
+      "maxSpeedKph": 70,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 4,
+      "nodeIds": [501, 502, 503],
+      "points": [
+        {"latitude": 16.5180, "longitude": 80.7500},
+        {"latitude": 16.5230, "longitude": 80.7750},
+        {"latitude": 16.5270, "longitude": 80.7968}
+      ]
+    },
+    {
+      "wayId": 1006,
+      "name": "Prakasam Barrage Link",
+      "highway": "secondary",
+      "oneWay": false,
+      "maxSpeedKph": 40,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 2,
+      "nodeIds": [601, 602, 603],
+      "points": [
+        {"latitude": 16.5070, "longitude": 80.6050},
+        {"latitude": 16.5090, "longitude": 80.6120},
+        {"latitude": 16.5110, "longitude": 80.6200}
+      ]
+    },
+    {
+      "wayId": 1007,
+      "name": "Inner Ring Road",
+      "highway": "secondary",
+      "oneWay": false,
+      "maxSpeedKph": 60,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 4,
+      "nodeIds": [701, 702, 703],
+      "points": [
+        {"latitude": 16.5200, "longitude": 80.6500},
+        {"latitude": 16.5250, "longitude": 80.6650},
+        {"latitude": 16.5300, "longitude": 80.6800}
+      ]
+    },
+    {
+      "wayId": 1008,
+      "name": "Auto Nagar Main Spine",
+      "highway": "residential",
+      "oneWay": false,
+      "maxSpeedKph": 30,
+      "access": "yes",
+      "roundabout": false,
+      "lanes": 2,
+      "nodeIds": [801, 802, 803],
+      "points": [
+        {"latitude": 16.4950, "longitude": 80.6600},
+        {"latitude": 16.4930, "longitude": 80.6680},
+        {"latitude": 16.4910, "longitude": 80.6750}
+      ]
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 {
   "model": "MARK-V IDR-V1 motion model",
   "preprocessing_version": "idr-v1",
+  "sha256": "926deef4b98b70b655a915582c4d32a1da3b47496bf162bc92acc81ee2700a88",
   "input": {
     "imu": [
       20,

@@ -697,6 +697,7 @@ class LiveNavigationRepository(
             prediction.isStationary ||
             rawSpeedKmh < 0.8 ||
             (!hasFreshGnss() && _navigationState.value.speedKmh < 0.5 && rawSpeedKmh < 2.0)
+        sensorAdapter.externalStationaryHint = isStationary
 
         val speedKmh = if (isStationary) 0.0 else filterVehicleSpeed(rawSpeedKmh, isStationary)
         val speedConfidence = if (isStationary) 98 else ((1.0f - prediction.zuptProbability).coerceIn(0.5f, 0.99f) * 100).toInt()
@@ -822,6 +823,7 @@ class LiveNavigationRepository(
             prediction.motionClass == MotionClass.STATIONARY ||
             rawSpeedKmh < 1.5 ||
             (!hasFreshGnss() && _navigationState.value.speedKmh < 0.5 && rawSpeedKmh < 3.0)
+        sensorAdapter.externalStationaryHint = isStationary
 
         val speedKmh = filterVehicleSpeed(rawSpeedKmh, isStationary)
         val speedSigmaKmh = prediction.speedUncertaintyMps * 3.6
@@ -1065,21 +1067,50 @@ class LiveNavigationRepository(
                 )
             }
         } ?: return null
+        val isRouteSnapped = match === routeMatch
+        val isRoadInRange = match.distanceMeters <= 100.0
+
+        val effectiveConfidence = if (isRouteSnapped) {
+            match.confidence
+        } else if (!isRoadInRange) {
+            0
+        } else {
+            match.confidence
+        }
+
+        val selectedRoad = when {
+            isRouteSnapped -> {
+                val dest = _activeRouteInfo.value.destinationName
+                if (dest.isNotBlank() && dest != "Select a destination") "Route to $dest" else "Active navigation route"
+            }
+            !isRoadInRange -> {
+                val nearestName = hmmMatch?.candidate?.roadName ?: roadCandidates.firstOrNull()?.roadName
+                if (nearestName != null) {
+                    val km = match.distanceMeters / 1000.0
+                    "Off-road / Unmapped (Nearest: $nearestName ${String.format(java.util.Locale.US, "%.1f", km)} km)"
+                } else {
+                    "Off-road / Unmapped Area"
+                }
+            }
+            else -> hmmMatch?.candidate?.roadName ?: roadCandidates.firstOrNull()?.roadName ?: "Active navigation route"
+        }
+
+        Log.i("LiveNavigation", "MapMatching update: pos=(${position.latitude}, ${position.longitude}) -> snapped=\"$selectedRoad\" dist=${String.format(java.util.Locale.US, "%.1f", match.distanceMeters)}m conf=$effectiveConfidence% dr=$isDeadReckoning")
         _mapMatchingState.value = MapMatchingState(
             rawPositionLat = position.latitude,
             rawPositionLon = position.longitude,
             matchedPositionLat = match.point.latitude,
             matchedPositionLon = match.point.longitude,
-            selectedRoadName = hmmMatch?.candidate?.roadName ?: roadCandidates.firstOrNull()?.roadName ?: "Active navigation route",
+            selectedRoadName = selectedRoad,
             candidateRoads = if (roadCandidates.isEmpty()) {
-                listOf(CandidateRoad("Active navigation route", match.confidence, match.point.latitude, match.point.longitude, match.bearingDegrees ?: 0.0))
+                listOf(CandidateRoad("Active navigation route", effectiveConfidence, match.point.latitude, match.point.longitude, match.bearingDegrees ?: 0.0))
             } else {
                 roadCandidates.map {
-                    val prob = if (hmmMatch != null && it.wayId == hmmMatch.candidate.wayId) hmmMatch.confidence else (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100)
+                    val prob = if (!isRoadInRange) 0 else if (hmmMatch != null && it.wayId == hmmMatch.candidate.wayId) hmmMatch.confidence else (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100)
                     CandidateRoad(it.roadName, prob, it.point.latitude, it.point.longitude, it.bearingDegrees)
                 }
             },
-            matchConfidencePercentage = match.confidence,
+            matchConfidencePercentage = effectiveConfidence,
             distanceFromRoadMeters = match.distanceMeters,
             candidateCount = if (roadCandidates.isEmpty()) 1 else roadCandidates.size
         )

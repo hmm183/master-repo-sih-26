@@ -381,20 +381,25 @@ class VehicleFusionEkf(
 
         resolveHeading(headingDeltaRadians, turningEngagement)
 
-        val north = forwardMeters * cos(rotationHeading) - constrainedLateral * sin(rotationHeading)
-        val east = forwardMeters * sin(rotationHeading) + constrainedLateral * cos(rotationHeading)
+        // Stationary sanity floor: clamp sub-centimeter open-loop sensor jitter when stopped
+        val isStationaryFloor = this.speedMps < 0.05 && abs(forwardMeters) < 0.04
+        val effectiveForward = if (isStationaryFloor) 0.0 else forwardMeters
+        val effectiveLateral = if (isStationaryFloor) 0.0 else constrainedLateral
+
+        val north = effectiveForward * cos(rotationHeading) - effectiveLateral * sin(rotationHeading)
+        val east = effectiveForward * sin(rotationHeading) + effectiveLateral * cos(rotationHeading)
         northMeters += north
         eastMeters += east
 
-        speedMps = (forwardMeters / intervalSeconds.coerceAtLeast(0.1)).coerceAtLeast(0.0)
+        speedMps = if (isStationaryFloor) 0.0 else (effectiveForward / intervalSeconds.coerceAtLeast(0.1)).coerceAtLeast(0.0)
 
         addProcessNoise(
-            forwardMeters = forwardMeters,
-            constrainedLateralMeters = constrainedLateral,
+            forwardMeters = effectiveForward,
+            constrainedLateralMeters = effectiveLateral,
             rotationHeadingRadians = rotationHeading
         )
-        speedVariance += 0.8
-        headingVariance += Math.toRadians(2.0).let { it * it }
+        speedVariance += if (isStationaryFloor) 0.05 else 0.8
+        headingVariance += Math.toRadians(if (isStationaryFloor) 0.2 else 2.0).let { it * it }
 
         anchorWindow()
         return state()

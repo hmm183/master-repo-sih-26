@@ -9,6 +9,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -124,9 +125,17 @@ private fun getDestinationPinDrawable(context: android.content.Context): Drawabl
 
 @Composable
 fun LiveNavigationScreen(
-    viewModel: NavigationViewModel
+    viewModel: NavigationViewModel,
+    onBackToHome: () -> Unit = {}
 ) {
     val navState by viewModel.navigationState.collectAsState()
+
+    BackHandler(enabled = true) {
+        if (navState.isNavigating) {
+            viewModel.stopNavigation()
+        }
+        onBackToHome()
+    }
     val gnssState by viewModel.gnssState.collectAsState()
     val sensorState by viewModel.sensorState.collectAsState()
     val routeInfo by viewModel.selectedRoute.collectAsState()
@@ -901,7 +910,10 @@ fun LiveNavigationScreen(
                             )
                         }
                         IconButton(
-                            onClick = { viewModel.stopNavigation() },
+                            onClick = {
+                                viewModel.stopNavigation()
+                                onBackToHome()
+                            },
                             modifier = Modifier
                                 .size(32.dp)
                                 .background(Color(0xFFF1F5F9), CircleShape)
@@ -1098,6 +1110,7 @@ fun LiveNavigationScreen(
                             onClick = {
                                 viewModel.stopNavigation()
                                 Toast.makeText(context, "Journey saved to Trips!", Toast.LENGTH_SHORT).show()
+                                onBackToHome()
                             },
                             modifier = Modifier
                                 .weight(1f)

@@ -156,12 +156,19 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
         return local.any { (!it.only && it.toWay == toWay) || (it.only && it.toWay != toWay) }
     }
 
-    private fun snapshot(isBusy: Boolean = false, message: String = if (segments.isEmpty()) "No regional road package imported" else "Regional road graph ready") =
+    private fun snapshot(isBusy: Boolean = false, message: String = if (segments.isEmpty()) "No regional road package imported" else "${segments.size} regional roads ready (Demo package)") =
         OfflineRoadNetworkState(segments.size, isBusy, message, packages, restrictions.size)
 
     private fun load(): List<RoadSegment> = runCatching {
-        if (!networkFile.exists()) return@runCatching emptyList()
-        val stored = gson.fromJson<StoredNetwork>(networkFile.readText(), object : TypeToken<StoredNetwork>() {}.type)
+        val jsonText = if (networkFile.exists()) {
+            networkFile.readText()
+        } else {
+            // Out-of-the-box demo asset fallback
+            runCatching {
+                context.assets.open("roads/default_regional_network.json").bufferedReader().use { it.readText() }
+            }.getOrNull() ?: return@runCatching emptyList()
+        }
+        val stored = gson.fromJson<StoredNetwork>(jsonText, object : TypeToken<StoredNetwork>() {}.type)
         restrictions = stored.restrictions; packages = stored.packages
         stored.segments.map { item -> RoadSegment(item.wayId, item.name, item.points.map { GeoPoint(it.latitude, it.longitude) }, item.nodeIds, item.oneWay, item.maxSpeedKph, item.access, item.highway, item.roundabout, item.lanes) }
     }.getOrDefault(emptyList())

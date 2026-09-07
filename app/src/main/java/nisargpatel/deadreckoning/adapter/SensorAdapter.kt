@@ -75,11 +75,16 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
     private var gravityValues = FloatArray(3)
     private var magValues = FloatArray(3)
     private val accelerometerTimestamps = ArrayDeque<Long>()
-    private val stationaryGyros = ArrayDeque<FloatArray>()
-    private var gyroBias = FloatArray(3)
     private var stationarySinceNs = 0L
     private var referenceMount: FloatArray? = null
     private var mountChanged = false
+
+    internal val debounceFilter = StationaryDebounceFilter()
+    internal val biasEstimator = GyroBiasEstimator()
+
+    /** External stationary hint from AI model (ZUPT / motion classification). */
+    @Volatile
+    var externalStationaryHint: Boolean = false
 
     fun startListening() {
         accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
@@ -114,13 +119,18 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
         val magnitude = sqrt(ax * ax + ay * ay + az * az)
         val samplingHz = updateSamplingRate(event.timestamp)
         val stableGravity = abs(magnitude - 9.81f) < 0.18f
-        val stationary = stableGravity && gyroMagnitude(_sensorState.value) < 0.08f
-        if (stationary && stationarySinceNs == 0L) stationarySinceNs = event.timestamp
-        if (!stationary) stationarySinceNs = 0L
+
+        // Instantaneous candidate check debounced via hysteresis filter
+        val gyroNorm = gyroMagnitude(_sensorState.value)
+        val isCandidateStationary = (stableGravity && gyroNorm < 0.08f) || externalStationaryHint
+        val newStationary = debounceFilter.update(isCandidateStationary)
+
+        if (newStationary && stationarySinceNs == 0L) stationarySinceNs = event.timestamp
+        if (!newStationary) stationarySinceNs = 0L
         val mountStability = (100f - abs(magnitude - 9.81f) * 12f).toInt().coerceIn(0, 100)
         _sensorState.value = _sensorState.value.copy(
             accelX = ax, accelY = ay, accelZ = az, accelMagnitude = magnitude, imuSamplingHz = samplingHz,
-            mountStabilityPercentage = mountStability, isStationary = stationary,
+            mountStabilityPercentage = mountStability, isStationary = newStationary,
             alignmentConfidencePercentage = if (rotationSensor != null || magSensor != null) mountStability else 0,
             overallHealthPercentage = listOf(accelSensor, gyroSensor, magSensor).count { it != null } * 100 / 3
         )
@@ -130,8 +140,14 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
 
     private fun handleGyroscope(event: SensorEvent) {
         val raw = event.values
-        if (_sensorState.value.isStationary) updateGyroBias(raw)
-        val corrected = FloatArray(3) { index -> raw[index] - gyroBias[index] }
+        val corrected = biasEstimator.addSample(
+            rawGyro = raw,
+            isStationary = _sensorState.value.isStationary,
+            gravityMagnitude = gravityMagnitude(),
+            externalStationaryHint = externalStationaryHint
+        )
+        val gyroBias = biasEstimator.gyroBias
+
         latestSampleTimestampNs = event.timestamp
         val updated = _sensorState.value.copy(
             gyroX = corrected[0], gyroY = corrected[1], gyroZ = corrected[2],
@@ -141,11 +157,10 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
         onImuSample?.invoke(ImuSample(event.timestamp, updated.accelX, updated.accelY, updated.accelZ, updated.gyroX, updated.gyroY, updated.gyroZ, updated.magX, updated.magY, updated.magZ, ImuSource.PHONE))
     }
 
-    private fun updateGyroBias(raw: FloatArray) {
-        stationaryGyros += raw.clone()
-        while (stationaryGyros.size > 150) stationaryGyros.removeFirst()
-        if (stationaryGyros.size < 30) return
-        gyroBias = FloatArray(3) { axis -> stationaryGyros.map { it[axis] }.average().toFloat() }
+    private fun gravityMagnitude(): Float {
+        val gx = gravityValues[0]; val gy = gravityValues[1]; val gz = gravityValues[2]
+        val mag = sqrt(gx * gx + gy * gy + gz * gz)
+        return if (mag > 0.1f) mag else 9.81f
     }
 
     private fun updateRotationVectorOrientation(values: FloatArray) {
@@ -192,4 +207,98 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
         return accelerometerTimestamps.size
     }
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+}
+
+/**
+ * Debounce filter preventing single-sample sensor chatter from prematurely flipping the
+ * vehicle motion state.
+ */
+class StationaryDebounceFilter(
+    val enterThreshold: Int = 15, // ~300 ms at 50 Hz
+    val exitThreshold: Int = 5    // ~100 ms at 50 Hz
+) {
+    var stableCount = 0
+        private set
+    var motionCount = 0
+        private set
+    var isStationary = false
+        private set
+
+    fun update(isCandidateStationary: Boolean): Boolean {
+        if (!isStationary) {
+            if (isCandidateStationary) {
+                stableCount++
+                motionCount = 0
+                if (stableCount >= enterThreshold) {
+                    isStationary = true
+                }
+            } else {
+                stableCount = 0
+            }
+        } else {
+            if (!isCandidateStationary) {
+                motionCount++
+                stableCount = 0
+                if (motionCount >= exitThreshold) {
+                    isStationary = false
+                }
+            } else {
+                motionCount = 0
+            }
+        }
+        return isStationary
+    }
+
+    fun reset() {
+        stableCount = 0
+        motionCount = 0
+        isStationary = false
+    }
+}
+
+/**
+ * Learns gyroscope bias during stationary periods with bootstrap cold-start resolution.
+ */
+class GyroBiasEstimator(
+    val bootstrapLimit: Int = 60,
+    val historyLimit: Int = 150,
+    val minSamplesForEstimate: Int = 30
+) {
+    private val stationaryGyros = ArrayDeque<FloatArray>()
+    var gyroBias = FloatArray(3)
+        private set
+    var bootstrapSampleCount = 0
+        private set
+
+    fun addSample(
+        rawGyro: FloatArray,
+        isStationary: Boolean,
+        gravityMagnitude: Float = 9.81f,
+        externalStationaryHint: Boolean = false
+    ): FloatArray {
+        val stableGravity = kotlin.math.abs(gravityMagnitude - 9.81f) < 0.35f
+        val isBootstrapping = bootstrapSampleCount < bootstrapLimit && stableGravity
+
+        if (isBootstrapping) {
+            bootstrapSampleCount++
+            updateBias(rawGyro)
+        } else if (isStationary || externalStationaryHint) {
+            updateBias(rawGyro)
+        }
+
+        return FloatArray(3) { index -> rawGyro[index] - gyroBias[index] }
+    }
+
+    private fun updateBias(raw: FloatArray) {
+        stationaryGyros += raw.clone()
+        while (stationaryGyros.size > historyLimit) stationaryGyros.removeFirst()
+        if (stationaryGyros.size < minSamplesForEstimate) return
+        gyroBias = FloatArray(3) { axis -> stationaryGyros.map { it[axis] }.average().toFloat() }
+    }
+
+    fun reset() {
+        stationaryGyros.clear()
+        gyroBias = FloatArray(3)
+        bootstrapSampleCount = 0
+    }
 }

@@ -35,4 +35,21 @@ class VehicleFusionEkfTest {
         assertTrue(alignment.confidencePercentage > 90)
         assertTrue(kotlin.math.abs(alignment.yawOffsetDegrees - 90.0) < 1.0)
     }
+
+    @Test
+    fun `stationary floor clamps sub-centimeter open-loop sensor jitter`() {
+        val fusion = VehicleFusionEkf()
+        val origin = GeoPoint(16.5, 80.6)
+        fusion.reset(origin, 0.0, 0.0, 5.0)
+
+        val predicted = fusion.predict(
+            forwardMeters = 0.02,
+            lateralMeters = 0.01,
+            headingDeltaRadians = 0.001,
+            intervalSeconds = 0.2
+        )
+        assertTrue(predicted != null)
+        assertTrue(predicted!!.position.distanceToAsDouble(origin) < 0.0001)
+        assertTrue(predicted.speedMps == 0.0)
+    }
 }

@@ -7,6 +7,7 @@ import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
 import java.nio.FloatBuffer
+import java.security.MessageDigest
 import java.util.ArrayDeque
 import kotlin.math.exp
 import kotlin.math.max
@@ -53,7 +54,8 @@ data class PinoManifest(
     val window_size: Int = 0,
     val window_seconds: Double = 0.0,
     val prediction_hz: Double = 0.0,
-    val zupt_threshold: Float = 0.70f
+    val zupt_threshold: Float = 0.70f,
+    val sha256: String = ""
 )
 
 /**
@@ -223,6 +225,13 @@ class PinoDrMotionEngine(
         }
 
         val modelBytes = context.assets.open(MODEL_ASSET).use { it.readBytes() }
+        if (manifest.sha256.isNotBlank()) {
+            val digest = MessageDigest.getInstance("SHA-256")
+            val computedHash = digest.digest(modelBytes).joinToString("") { "%02x".format(it) }
+            require(computedHash.equals(manifest.sha256, ignoreCase = true)) {
+                "PINO-DR v3 model file integrity check failed! Expected sha256: ${manifest.sha256}, computed: $computedHash"
+            }
+        }
         val options = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(2)
         }
