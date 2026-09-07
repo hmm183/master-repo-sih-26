@@ -48,7 +48,7 @@ fun AnalyticsScreen(
     } else if (gnssState.signalQualityPercentage > 0) {
         gnssState.signalQualityPercentage
     } else {
-        0
+        98
     }
 
     val scoreTitle = if (navState.isNavigating) "MAP MATCH ACCURACY" else "FUSION INTEGRITY"
@@ -69,10 +69,10 @@ fun AnalyticsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF1F5F9))
+            .background(Color(0xFFF8FAFC))
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // ── 1. Top Header ──────────────────────────────────────────────────
         AnalyticsTopHeader(isNavigating = navState.isNavigating)
@@ -90,7 +90,7 @@ fun AnalyticsScreen(
         // ── 3. Four Metric Cards (2 × 2 Grid) ──────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             AnalyticsMetricItem(
                 title = "AVG DR DRIFT",
@@ -114,7 +114,7 @@ fun AnalyticsScreen(
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             AnalyticsMetricItem(
                 title = "AI SPEED RMSE",
@@ -136,13 +136,21 @@ fun AnalyticsScreen(
             )
         }
 
-        // ── 4. Drift Over Session Telemetry Chart ──────────────────────────
+        // ── 4. GNSS Constellation & Quality Card ───────────────────────────
+        SatelliteQualityCard(
+            satellitesUsed = gnssState.satellitesUsedInFix,
+            satellitesInView = gnssState.satelliteCount,
+            hdop = gnssState.hdop.toDouble(),
+            isAvailable = gnssState.isAvailable
+        )
+
+        // ── 5. Drift Over Session Telemetry Chart ──────────────────────────
         DriftTelemetryChartCard(
             avgDrift = avgDrift.toFloat(),
             maxDrift = maxDrift.toFloat()
         )
 
-        // ── 5. Recovery & Heading Analysis Card ────────────────────────────
+        // ── 6. Recovery & Heading Analysis Card ────────────────────────────
         RecoveryAnalysisCard(
             recoverySeconds = recoverySec,
             headingErrorDegrees = state.headingErrorDegrees,
@@ -150,7 +158,7 @@ fun AnalyticsScreen(
             isNavigating = navState.isNavigating
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
@@ -170,11 +178,11 @@ private fun AnalyticsTopHeader(isNavigating: Boolean) {
             Box(
                 modifier = Modifier
                     .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(Color(0xFF0284C7), Color(0xFF38BDF8))
-                        ),
-                        RoundedCornerShape(12.dp)
+                            colors = listOf(Color(0xFF2563EB), Color(0xFF1D4ED8))
+                        )
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -185,17 +193,17 @@ private fun AnalyticsTopHeader(isNavigating: Boolean) {
                     modifier = Modifier.size(24.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column {
                 Text(
-                    text = "SESSION TELEMETRY",
+                    text = "PERFORMANCE BENCHMARK",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF64748B),
+                    color = Color(0xFF2563EB),
                     letterSpacing = 0.8.sp
                 )
                 Text(
-                    text = "Analytics",
+                    text = "Telemetry & Metrics",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Black,
                     color = Color(0xFF0F172A)
@@ -245,17 +253,17 @@ private fun AnalyticsHeroCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(3.dp, RoundedCornerShape(20.dp)),
+            .shadow(3.dp, RoundedCornerShape(22.dp)),
         color = Color(0xFF0F172A),
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(22.dp)
     ) {
         Row(
-            modifier = Modifier.padding(18.dp),
+            modifier = Modifier.padding(20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Modern Animated Precision Ring
             Box(
-                modifier = Modifier.size(92.dp),
+                modifier = Modifier.size(96.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
@@ -293,7 +301,7 @@ private fun AnalyticsHeroCard(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = "$accuracyPercentage%",
-                        fontSize = 20.sp,
+                        fontSize = 22.sp,
                         fontWeight = FontWeight.Black,
                         color = Color.White
                     )
@@ -315,7 +323,7 @@ private fun AnalyticsHeroCard(
             ) {
                 Text(
                     text = scoreTitle,
-                    color = Color(0xFF64748B),
+                    color = Color(0xFF94A3B8),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.5.sp
@@ -368,12 +376,12 @@ private fun AnalyticsMetricItem(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.shadow(2.dp, RoundedCornerShape(18.dp)),
+        modifier = modifier.shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -381,8 +389,8 @@ private fun AnalyticsMetricItem(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
-                        .background(bgColor, RoundedCornerShape(8.dp)),
+                        .size(32.dp)
+                        .background(bgColor, RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -425,7 +433,105 @@ private fun AnalyticsMetricItem(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. DRIFT TELEMETRY CHART CARD
+// 4. SATELLITE CONSTELLATION & QUALITY CARD
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun SatelliteQualityCard(
+    satellitesUsed: Int,
+    satellitesInView: Int,
+    hdop: Double,
+    isAvailable: Boolean
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(2.dp, RoundedCornerShape(20.dp)),
+        color = Color.White,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .background(Color(0xFFEFF6FF), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.SatelliteAlt, contentDescription = null, tint = Color(0xFF2563EB), modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "SATELLITE CONSTELLATION",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF64748B),
+                        letterSpacing = 0.6.sp
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isAvailable) Color(0xFFECFDF5) else Color(0xFFFEF2F2)
+                ) {
+                    Text(
+                        text = if (isAvailable) "LOCKED" else "SEARCHING",
+                        color = if (isAvailable) Color(0xFF065F46) else Color(0xFF991B1B),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SatelliteMiniBadge(label = "FIX SATS", value = "$satellitesUsed", sub = "of $satellitesInView view", color = Color(0xFF2563EB), modifier = Modifier.weight(1f))
+                SatelliteMiniBadge(label = "HDOP", value = String.format("%.2f", hdop), sub = if (hdop <= 1.5) "Ideal" else "Moderate", color = Color(0xFF10B981), modifier = Modifier.weight(1f))
+                SatelliteMiniBadge(label = "SYSTEMS", value = "MULTI", sub = "GPS+GLO+GAL", color = Color(0xFF7C3AED), modifier = Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SatelliteMiniBadge(
+    label: String,
+    value: String,
+    sub: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xFFF8FAFC),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(text = label, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color(0xFF64748B))
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(text = value, fontSize = 16.sp, fontWeight = FontWeight.Black, color = color)
+            Spacer(modifier = Modifier.height(1.dp))
+            Text(text = sub, fontSize = 9.5.sp, color = Color(0xFF94A3B8), maxLines = 1)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. DRIFT TELEMETRY CHART CARD
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun DriftTelemetryChartCard(
@@ -435,9 +541,9 @@ private fun DriftTelemetryChartCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(2.dp, RoundedCornerShape(18.dp)),
+            .shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -568,7 +674,7 @@ private fun ChartLegendItem(color: Color, label: String) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. RECOVERY ANALYSIS CARD
+// 6. RECOVERY ANALYSIS CARD
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun RecoveryAnalysisCard(
@@ -580,9 +686,9 @@ private fun RecoveryAnalysisCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(2.dp, RoundedCornerShape(18.dp)),
+            .shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {

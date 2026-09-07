@@ -961,9 +961,16 @@ private fun SystemReadinessCard(
                     accentColor = Color(0xFF10B981),
                     modifier = Modifier.weight(1f)
                 )
+                val displayModelName = if (modelVersion.isNotBlank() && modelVersion != "Unavailable") {
+                    if (modelVersion.contains("PINO", ignoreCase = true)) "PINO-DR"
+                    else if (modelVersion.contains("IDR", ignoreCase = true)) "IDR-V1"
+                    else "AI Engine"
+                } else {
+                    "AI Engine"
+                }
                 StatusBadge(
                     icon = Icons.Default.Storage,
-                    title = if (v8Online) "V8 loaded" else "V8 offline",
+                    title = if (v8Online) "$displayModelName loaded" else "$displayModelName offline",
                     statusText = if (v8Online) "Online" else "Offline",
                     isOnline = v8Online,
                     accentColor = if (v8Online) Color(0xFF8B5CF6) else Color(0xFFEF4444),

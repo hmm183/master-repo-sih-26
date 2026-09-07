@@ -5,7 +5,6 @@ import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -44,10 +42,10 @@ fun IntelligenceScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF1F5F9))
+            .background(Color(0xFFF8FAFC))
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // ── 1. Top Header ──────────────────────────────────────────────────
         IntelligenceTopHeader(
@@ -55,7 +53,7 @@ fun IntelligenceScreen(
             inferenceTimeMs = aiState.inferenceTimeMs
         )
 
-        // ── 2. Hero Dark Navy AI Neural Core Card ──────────────────────────
+        // ── 2. Hero Luxury AI Neural Core Card ─────────────────────────────
         val isStationary = aiState.motionClassification.equals("Stationary", ignoreCase = true) || navState.speedKmh < 0.5
         val liveSpeed = if (isStationary) 0.0 else if (aiState.predictedSpeedKmh >= 0.5) aiState.predictedSpeedKmh else navState.speedKmh
         val liveSpeedConf = when {
@@ -82,7 +80,7 @@ fun IntelligenceScreen(
         // ── 3. Dual Telemetry Row (Speed Inference + Motion Classification) ─
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             AISpeedInferenceCard(
                 predictedSpeedKmh = liveSpeed,
@@ -96,22 +94,25 @@ fun IntelligenceScreen(
             )
         }
 
-        // ── 4. Road Impact & Pothole Detector Card ─────────────────────────
+        // ── 4. Neural Model Selection & Capabilities ───────────────────────
+        NeuralModelComparisonCard()
+
+        // ── 5. Road Impact & Pothole Detector Card ─────────────────────────
         RoadImpactDetectorCard(
             isAlert = isAlert,
             alertMessage = if (isAlert) alertText else "Road Surface Smooth",
             lastDetection = if (isAlert) "Immediate anomaly flagged" else "Continuous IMU Z-axis shock monitoring"
         )
 
-        // ── 5. Neural Architecture & Hardware Runtime Specs ────────────────
+        // ── 6. Neural Architecture & Hardware Runtime Specs ────────────────
         ModelRuntimeSpecsCard(
-            modelVersion = if (aiState.modelVersion.isNotBlank()) aiState.modelVersion else "V8-Hybrid-DR (Quantized)",
+            modelVersion = if (aiState.modelVersion.isNotBlank()) aiState.modelVersion else "PINO-DR v3 (Quantized)",
             samplingHz = if (sensorState.imuSamplingHz > 0) sensorState.imuSamplingHz else 116,
             mountStability = if (sensorState.mountStabilityPercentage > 0) sensorState.mountStabilityPercentage else 99,
             isLoaded = aiState.isModelLoaded
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
@@ -134,11 +135,11 @@ private fun IntelligenceTopHeader(
             Box(
                 modifier = Modifier
                     .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .background(
                         Brush.linearGradient(
-                            colors = listOf(Color(0xFF8B5CF6), Color(0xFF6366F1))
-                        ),
-                        RoundedCornerShape(12.dp)
+                            colors = listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8))
+                        )
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -149,17 +150,17 @@ private fun IntelligenceTopHeader(
                     modifier = Modifier.size(24.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column {
                 Text(
-                    text = "IDR INTELLIGENCE",
+                    text = "NEURAL CO-PILOT",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF64748B),
+                    color = Color(0xFF2563EB),
                     letterSpacing = 0.8.sp
                 )
                 Text(
-                    text = "Model Intelligence",
+                    text = "AI Models & Inference",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Black,
                     color = Color(0xFF0F172A)
@@ -170,7 +171,7 @@ private fun IntelligenceTopHeader(
         // Live status pill
         Surface(
             shape = RoundedCornerShape(20.dp),
-            color = if (isModelLoaded) Color(0xFFECFDF5) else Color(0xFFF8FAFC),
+            color = if (isModelLoaded) Color(0xFFECFDF5) else Color(0xFFF1F5F9),
             border = BorderStroke(1.dp, if (isModelLoaded) Color(0xFFA7F3D0) else Color(0xFFE2E8F0)),
             shadowElevation = 0.dp
         ) {
@@ -188,7 +189,7 @@ private fun IntelligenceTopHeader(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (isModelLoaded) "V8 Active" else "Ready",
+                    text = if (isModelLoaded) "PINO-DR Active" else "Ready",
                     color = if (isModelLoaded) Color(0xFF065F46) else Color(0xFF475569),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
@@ -199,7 +200,7 @@ private fun IntelligenceTopHeader(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. HERO DARK NAVY AI NEURAL CORE CARD
+// 2. HERO LUXURY AI NEURAL CORE CARD
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun AINeuralCoreHeroCard(
@@ -211,12 +212,12 @@ private fun AINeuralCoreHeroCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(3.dp, RoundedCornerShape(20.dp)),
+            .shadow(3.dp, RoundedCornerShape(22.dp)),
         color = Color(0xFF0F172A),
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(22.dp)
     ) {
         Column(
-            modifier = Modifier.padding(18.dp)
+            modifier = Modifier.padding(20.dp)
         ) {
             // Top row: AI Badge & Latency Chip
             Row(
@@ -227,8 +228,8 @@ private fun AINeuralCoreHeroCard(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
-                            .size(30.dp)
-                            .background(Color(0xFF1E293B), RoundedCornerShape(8.dp)),
+                            .size(32.dp)
+                            .background(Color(0xFF1E293B), RoundedCornerShape(10.dp)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -274,7 +275,7 @@ private fun AINeuralCoreHeroCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Main AI Speed Readout
             Row(
@@ -285,15 +286,16 @@ private fun AINeuralCoreHeroCard(
                 Column {
                     Text(
                         text = "AI INFERRED SPEED",
-                        color = Color(0xFF64748B),
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold
+                        color = Color(0xFF94A3B8),
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
                             text = String.format("%.1f", predictedSpeedKmh),
-                            fontSize = 36.sp,
+                            fontSize = 38.sp,
                             fontWeight = FontWeight.Black,
                             color = Color.White
                         )
@@ -311,8 +313,8 @@ private fun AINeuralCoreHeroCard(
                 // Confidence pill
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = Color(0xFF0284C7).copy(alpha = 0.2f),
-                    border = BorderStroke(1.dp, Color(0xFF0284C7).copy(alpha = 0.4f))
+                    color = Color(0xFF0284C7).copy(alpha = 0.25f),
+                    border = BorderStroke(1.dp, Color(0xFF0284C7).copy(alpha = 0.5f))
                 ) {
                     Text(
                         text = "$confidencePercentage% Confidence",
@@ -324,7 +326,7 @@ private fun AINeuralCoreHeroCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Dynamic Progress Track
             Column {
@@ -334,12 +336,12 @@ private fun AINeuralCoreHeroCard(
                 ) {
                     Text(
                         text = "Kalman-Inference Alignment",
-                        color = Color(0xFF64748B),
+                        color = Color(0xFF94A3B8),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium
                     )
                     Text(
-                        text = "Active Fusion",
+                        text = "Active Fusion Lock",
                         color = Color(0xFF38BDF8),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -380,12 +382,12 @@ private fun AISpeedInferenceCard(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.shadow(2.dp, RoundedCornerShape(18.dp)),
+        modifier = modifier.shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -393,24 +395,24 @@ private fun AISpeedInferenceCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
-                        .background(Color(0xFFEFF6FF), RoundedCornerShape(8.dp)),
+                        .size(32.dp)
+                        .background(Color(0xFFEFF6FF), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Speed,
                         contentDescription = null,
                         tint = Color(0xFF2563EB),
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFFF1F5F9)
+                    color = Color(0xFFEFF6FF)
                 ) {
                     Text(
-                        text = "V8 Model",
-                        color = Color(0xFF475569),
+                        text = "PINO-DR",
+                        color = Color(0xFF1D4ED8),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -444,14 +446,14 @@ private fun AISpeedInferenceCard(
                 )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             // Mini 6-bar variance visualization
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                val heights = listOf(8.dp, 16.dp, 12.dp, 20.dp, 14.dp, 10.dp)
+                val heights = listOf(8.dp, 14.dp, 18.dp, 12.dp, 16.dp, 10.dp)
                 heights.forEach { h ->
                     Box(
                         modifier = Modifier
@@ -472,11 +474,10 @@ private fun MotionClassificationCard(
     confidence: Int,
     modifier: Modifier = Modifier
 ) {
-    // Dynamic waveform animation
-    val infiniteTransition = rememberInfiniteTransition(label = "waveform")
+    val infiniteTransition = rememberInfiniteTransition(label = "motionAnim")
     val phase by infiniteTransition.animateFloat(
         initialValue = 0f,
-        targetValue = 2f * Math.PI.toFloat(),
+        targetValue = 6.28f,
         animationSpec = infiniteRepeatable(
             animation = tween(1200, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
@@ -485,12 +486,12 @@ private fun MotionClassificationCard(
     )
 
     Surface(
-        modifier = modifier.shadow(2.dp, RoundedCornerShape(18.dp)),
+        modifier = modifier.shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -498,15 +499,15 @@ private fun MotionClassificationCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
-                        .background(Color(0xFFF0FDF4), RoundedCornerShape(8.dp)),
+                        .size(32.dp)
+                        .background(Color(0xFFF0FDF4), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.DirectionsCar,
                         contentDescription = null,
                         tint = Color(0xFF16A34A),
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
                 Surface(
@@ -540,7 +541,7 @@ private fun MotionClassificationCard(
                 maxLines = 1
             )
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
             // Animated motion soundwave bars
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -564,7 +565,122 @@ private fun MotionClassificationCard(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. ROAD IMPACT DETECTOR CARD
+// 4. MODEL COMPARISON CARD
+// ─────────────────────────────────────────────────────────────────────────────
+@Composable
+private fun NeuralModelComparisonCard() {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .shadow(2.dp, RoundedCornerShape(20.dp)),
+        color = Color.White,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "NEURAL ARCHITECTURES",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF64748B),
+                    letterSpacing = 0.6.sp
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFFEFF6FF)
+                ) {
+                    Text(
+                        text = "ON-DEVICE TFLITE",
+                        color = Color(0xFF2563EB),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // PINO-DR card
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0xFFEFF6FF),
+                border = BorderStroke(1.5.dp, Color(0xFF3B82F6)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFF2563EB)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("PINO-DR v3 Production", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = Color(0xFF0F172A))
+                        Text("Physics-Informed Neural Operator • ZUPT Gated", fontSize = 11.sp, color = Color(0xFF2563EB))
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF2563EB)
+                    ) {
+                        Text("ACTIVE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // IDR-V1 card
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0xFFF8FAFC),
+                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0xFFE2E8F0)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Tune, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("IDR-V1 Kinematic", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = Color(0xFF334155))
+                        Text("Kinematic Residual Network • Uncertainty Heads", fontSize = 11.sp, color = Color(0xFF64748B))
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFFF1F5F9)
+                    ) {
+                        Text("STANDBY", color = Color(0xFF64748B), fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. ROAD IMPACT DETECTOR CARD
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun RoadImpactDetectorCard(
@@ -575,9 +691,9 @@ private fun RoadImpactDetectorCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(2.dp, RoundedCornerShape(18.dp)),
+            .shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, if (isAlert) Color(0xFFFECACA) else Color(0xFFE2E8F0))
     ) {
         Row(
@@ -644,7 +760,7 @@ private fun RoadImpactDetectorCard(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. MODEL SPECIFICATIONS & HARDWARE RUNTIME
+// 6. MODEL SPECIFICATIONS & HARDWARE RUNTIME
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
 private fun ModelRuntimeSpecsCard(
@@ -656,9 +772,9 @@ private fun ModelRuntimeSpecsCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(2.dp, RoundedCornerShape(18.dp)),
+            .shadow(2.dp, RoundedCornerShape(20.dp)),
         color = Color.White,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         border = BorderStroke(1.dp, Color(0xFFE2E8F0))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -690,12 +806,12 @@ private fun ModelRuntimeSpecsCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            SpecRowItem(label = "Architecture", value = modelVersion, valueColor = Color(0xFF7C3AED))
-            Divider(color = Color(0xFFF1F5F9), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
+            SpecRowItem(label = "Active Architecture", value = modelVersion, valueColor = Color(0xFF2563EB))
+            HorizontalDivider(color = Color(0xFFF1F5F9), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
             SpecRowItem(label = "Execution Target", value = "Device CPU / NNAPI Hardware Fallback", valueColor = Color(0xFF0F172A))
-            Divider(color = Color(0xFFF1F5F9), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(color = Color(0xFFF1F5F9), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
             SpecRowItem(label = "IMU Pipeline Rate", value = "$samplingHz Hz Real-time", valueColor = Color(0xFF16A34A))
-            Divider(color = Color(0xFFF1F5F9), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
+            HorizontalDivider(color = Color(0xFFF1F5F9), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
             SpecRowItem(label = "Mount Stability", value = "$mountStability% Calibrated", valueColor = Color(0xFF0284C7))
         }
     }

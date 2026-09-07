@@ -29,6 +29,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -82,17 +83,31 @@ fun OfflineMapsScreen(currentPosition: GeoPoint?) {
             }
         }
 
-        Button(
-            onClick = { currentPosition?.let { position ->
-                cache.cacheAround(position)
-            } },
-            enabled = hasLocation && !state.isDownloading,
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(Icons.Default.DownloadForOffline, contentDescription = null)
-            Spacer(Modifier.padding(4.dp))
-            Text("CACHE MAP TILES AROUND ME", fontWeight = FontWeight.Bold)
+            Button(
+                onClick = { currentPosition?.let { position -> cache.cacheAround(position, 1_500.0) } },
+                enabled = hasLocation && !state.isDownloading,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlue)
+            ) {
+                Icon(Icons.Default.DownloadForOffline, contentDescription = null)
+                Spacer(Modifier.padding(3.dp))
+                Text("LOCAL (1.5 KM)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+
+            Button(
+                onClick = { currentPosition?.let { position -> cache.cacheRegionalArea(position, 15.0) } },
+                enabled = hasLocation && !state.isDownloading,
+                modifier = Modifier.weight(1.3f),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
+            ) {
+                Icon(Icons.Default.DownloadForOffline, contentDescription = null)
+                Spacer(Modifier.padding(3.dp))
+                Text("WHOLE REGION (15 KM)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
         }
         if (!hasLocation) Text("Start navigation and wait for a GNSS fix before caching an area.", color = TextSecondary, fontSize = 12.sp)
 

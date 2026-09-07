@@ -87,6 +87,61 @@ class OfflineMapCache(context: Context) {
         }
     }
 
+    fun cacheRegionalArea(center: GeoPoint, radiusKm: Double = 15.0) {
+        if (_state.value.isDownloading) return
+        val radiusMeters = radiusKm * 1_000.0
+        val latitudeDelta = radiusMeters / 111_111.0
+        val longitudeDelta = radiusMeters / (111_111.0 * cos(Math.toRadians(center.latitude)))
+        val area = BoundingBox(
+            center.latitude + latitudeDelta,
+            center.longitude + longitudeDelta,
+            center.latitude - latitudeDelta,
+            center.longitude - longitudeDelta
+        )
+        _state.value = _state.value.copy(
+            isDownloading = true,
+            downloadedTiles = 0,
+            totalTiles = 0,
+            message = "Downloading Regional Map (${radiusKm.toInt()} km radius)..."
+        )
+        try {
+            // Regional zoom levels: 12 (overview) to 15 (street level)
+            cacheManager.downloadAreaAsyncNoUI(appContext, area, 12, 15, object : CacheManager.CacheManagerCallback {
+                override fun downloadStarted() = Unit
+
+                override fun setPossibleTilesInArea(total: Int) {
+                    _state.value = _state.value.copy(totalTiles = total)
+                }
+
+                override fun updateProgress(progress: Int, currentZoomLevel: Int, zoomMin: Int, zoomMax: Int) {
+                    _state.value = _state.value.copy(
+                        downloadedTiles = progress,
+                        message = "Caching regional zoom $currentZoomLevel ($progress/${_state.value.totalTiles})"
+                    )
+                }
+
+                override fun onTaskComplete() {
+                    _state.value = _state.value.copy(
+                        cachedBytes = cacheManager.currentCacheUsage(),
+                        isDownloading = false,
+                        message = "Regional map downloaded successfully"
+                    )
+                }
+
+                override fun onTaskFailed(errors: Int) {
+                    _state.value = _state.value.copy(
+                        isDownloading = false,
+                        message = "Regional download paused ($errors errors)"
+                    )
+                }
+            })
+        } catch (e: Throwable) {
+            Log.e("OfflineMapCache", "Failed to launch regional tile caching", e)
+            _state.value = _state.value.copy(isDownloading = false, message = "Cache error: ${e.message}")
+        }
+    }
+
+
     fun clearCache() {
         if (_state.value.isDownloading) return
         try {

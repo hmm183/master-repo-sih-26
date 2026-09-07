@@ -46,7 +46,13 @@ fun DiagnosticsScreen(
 
         CommandPanel(borderColor = PurpleAI.copy(alpha = 0.5f)) {
             SectionLabel("Pipeline latency", PurpleAI)
-            DataRow("V8 inference", "${aiState.inferenceTimeMs} ms", PurpleAI)
+            val modelLabel = when {
+                aiState.modelVersion.contains("PINO", ignoreCase = true) -> "PINO-DR"
+                aiState.modelVersion.contains("IDR", ignoreCase = true) -> "IDR-V1"
+                aiState.modelVersion.isNotBlank() -> aiState.modelVersion.take(10)
+                else -> "AI model"
+            }
+            DataRow("$modelLabel inference", "${aiState.inferenceTimeMs} ms", PurpleAI)
             DividerLine()
             DataRow("EKF fusion step", "Not instrumented", TextSecondary)
             DataRow("Map matching step", "Not instrumented", TextSecondary)

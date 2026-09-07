@@ -130,7 +130,7 @@ fun TrajectoryScreen(
                 Text(text = "LIVE TRAJECTORY LEGEND", color = WarningAmber, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(text = "Green: received GNSS positions.", color = TextSecondary, fontSize = 11.sp)
-                Text(text = "Red: raw V8 dead-reckoning estimates.", color = TextSecondary, fontSize = 11.sp)
+                Text(text = "Red: raw AI dead-reckoning estimates.", color = TextSecondary, fontSize = 11.sp)
                 Text(text = "Blue: estimates projected onto the active route geometry.", color = TextSecondary, fontSize = 11.sp)
             }
         }

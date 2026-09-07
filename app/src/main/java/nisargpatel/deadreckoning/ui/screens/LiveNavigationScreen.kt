@@ -144,6 +144,15 @@ fun LiveNavigationScreen(
     var showSearchModal by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    val voiceGuidance = remember { nisargpatel.deadreckoning.util.VoiceGuidanceHelper(context) }
+    var isVoiceMuted by remember { mutableStateOf(false) }
+    var isFollowingCar by remember { mutableStateOf(true) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            voiceGuidance.shutdown()
+        }
+    }
 
     val effectiveHeading = when {
         sensorState.vehicleHeadingDegrees != 0f -> ((sensorState.vehicleHeadingDegrees.toDouble() % 360.0 + 360.0) % 360.0)
@@ -172,14 +181,23 @@ fun LiveNavigationScreen(
         }
     }
 
+    // Continuous smooth camera tracking centered on the car (Google Maps style)
+    LaunchedEffect(navState.latitude, navState.longitude, isFollowingCar) {
+        if (isFollowingCar && (navState.latitude != 0.0 || navState.longitude != 0.0)) {
+            mapViewRef?.let { map ->
+                map.controller.animateTo(GeoPoint(navState.latitude, navState.longitude))
+            }
+        }
+    }
+
     // Dynamic off-route recalculation check:
     LaunchedEffect(navState.latitude, navState.longitude, navState.isNavigating, routeInfo.routePoints) {
         if (navState.isNavigating && routeInfo.routePoints.size > 1 && routeInfo.destinationPoint != null && currentVehiclePos != null) {
             val match = RouteMapMatcher.match(currentVehiclePos, routeInfo.routePoints)
             val dist = match?.distanceMeters ?: Double.MAX_VALUE
-            if (dist > 35.0) {
+            if (dist > 30.0) {
                 offRouteTicks++
-                if (offRouteTicks >= 3 && !isRerouting) {
+                if ((offRouteTicks >= 2 || dist > 50.0) && !isRerouting) {
                     viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
                     offRouteTicks = 0
                 }
@@ -190,6 +208,19 @@ fun LiveNavigationScreen(
     }
 
     val isJourneyActive = navState.isNavigating
+
+    // Voice guidance turn-by-turn maneuver announcements
+    LaunchedEffect(routeInfo.nextManeuver, isJourneyActive) {
+        if (isJourneyActive && routeInfo.nextManeuver.isNotBlank() && routeInfo.nextManeuver != "Continue on route") {
+            voiceGuidance.speak(routeInfo.nextManeuver)
+        }
+    }
+
+    LaunchedEffect(isRerouting) {
+        if (isRerouting) {
+            voiceGuidance.speak("Recalculating route to destination", isPriority = true)
+        }
+    }
 
     LaunchedEffect(viewModel.events) {
         viewModel.events.collect { event ->
@@ -236,6 +267,12 @@ fun LiveNavigationScreen(
                 NavigationMapHolder.getOrCreateMapView(ctx).also { map ->
                     mapViewRef = map
                     map.onResume()
+                    map.setOnTouchListener { _, event ->
+                        if (event.action == android.view.MotionEvent.ACTION_MOVE) {
+                            isFollowingCar = false
+                        }
+                        false
+                    }
                 }
             },
             update = { mapView ->
@@ -261,10 +298,14 @@ fun LiveNavigationScreen(
                                 val altLine = Polyline().apply {
                                     id = "uber_alt_route_${alt.id}"
                                     outlinePaint.color = AndroidColor.parseColor("#94A3B8") // Slate gray alternative
-                                    outlinePaint.strokeWidth = 9.0f
+                                    outlinePaint.strokeWidth = 10.0f
                                     outlinePaint.strokeCap = AndroidPaint.Cap.ROUND
                                     outlinePaint.strokeJoin = AndroidPaint.Join.ROUND
                                     setPoints(alt.routePoints)
+                                    setOnClickListener { _, _, _ ->
+                                        viewModel.selectAlternativeRoute(alt.id)
+                                        true
+                                    }
                                 }
                                 mapView.overlays.add(0, altLine)
                             }
@@ -392,40 +433,69 @@ fun LiveNavigationScreen(
                     }
                 }
 
-                // Short Right Pill: Confidence 99%
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = Color.White.copy(alpha = 0.94f),
-                    shadowElevation = 3.dp,
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.8f)),
-                    modifier = Modifier.height(34.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    // Voice guidance mute / unmute button
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White.copy(alpha = 0.94f),
+                        shadowElevation = 3.dp,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.8f)),
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clickable {
+                                isVoiceMuted = !isVoiceMuted
+                                voiceGuidance.isMuted = isVoiceMuted
+                                Toast.makeText(context, if (!isVoiceMuted) "Voice Guidance Active" else "Voice Muted", Toast.LENGTH_SHORT).show()
+                            }
                     ) {
-                        SignalBarsIcon(confidence = navState.confidencePercentage)
-                        Spacer(modifier = Modifier.width(7.dp))
-                        Text(
-                            text = "${navState.confidencePercentage}%",
-                            fontSize = 12.5.sp,
-                            color = Color(0xFF047857),
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Confidence",
-                            fontSize = 10.5.sp,
-                            color = Color(0xFF64748B),
-                            fontWeight = FontWeight.Normal
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Details",
-                            tint = Color(0xFF64748B),
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                            Icon(
+                                imageVector = if (isVoiceMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                                contentDescription = "Voice Guidance Toggle",
+                                tint = if (isVoiceMuted) Color(0xFF94A3B8) else Color(0xFF2563EB),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
+
+                    // Short Right Pill: Confidence 99%
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color.White.copy(alpha = 0.94f),
+                        shadowElevation = 3.dp,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.8f)),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SignalBarsIcon(confidence = navState.confidencePercentage)
+                            Spacer(modifier = Modifier.width(7.dp))
+                            Text(
+                                text = "${navState.confidencePercentage}%",
+                                fontSize = 12.5.sp,
+                                color = Color(0xFF047857),
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Confidence",
+                                fontSize = 10.5.sp,
+                                color = Color(0xFF64748B),
+                                fontWeight = FontWeight.Normal
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Details",
+                                tint = Color(0xFF64748B),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -662,6 +732,43 @@ fun LiveNavigationScreen(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Floating Re-Center Button (Appears when user drags map away from the vehicle)
+        AnimatedVisibility(
+            visible = !isFollowingCar,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut(),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 14.dp, bottom = if (isJourneyActive) 285.dp else 205.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = Color.White,
+                shadowElevation = 6.dp,
+                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                modifier = Modifier
+                    .size(44.dp)
+                    .clickable {
+                        isFollowingCar = true
+                        if (navState.latitude != 0.0 || navState.longitude != 0.0) {
+                            mapViewRef?.let { map ->
+                                map.controller.animateTo(GeoPoint(navState.latitude, navState.longitude))
+                                map.controller.setZoom(17.0)
+                            }
+                        }
+                    }
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Icon(
+                        imageVector = Icons.Default.MyLocation,
+                        contentDescription = "Re-center",
+                        tint = Color(0xFF2563EB),
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
         }
@@ -1001,6 +1108,8 @@ fun LiveNavigationScreen(
                     // Big Prominent "Start Navigation" Button
                     Button(
                         onClick = {
+                            isFollowingCar = true
+                            voiceGuidance.speak("Starting navigation to ${routeInfo.destinationName}")
                             viewModel.startNavigation()
                         },
                         modifier = Modifier
@@ -1088,10 +1197,11 @@ fun LiveNavigationScreen(
                     ) {
                         OutlinedButton(
                             onClick = {
+                                isFollowingCar = true
                                 if (navState.latitude != 0.0 || navState.longitude != 0.0) {
                                     mapViewRef?.let { map ->
                                         map.controller.animateTo(GeoPoint(navState.latitude, navState.longitude))
-                                        map.controller.setZoom(17.0)
+                                        map.controller.setZoom(17.5)
                                     }
                                 }
                             },
@@ -1108,6 +1218,7 @@ fun LiveNavigationScreen(
 
                         Button(
                             onClick = {
+                                voiceGuidance.speak("Navigation ended")
                                 viewModel.stopNavigation()
                                 Toast.makeText(context, "Journey saved to Trips!", Toast.LENGTH_SHORT).show()
                                 onBackToHome()

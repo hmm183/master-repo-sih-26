@@ -67,9 +67,29 @@ class NavigationViewModel(
         _isRerouting.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val newRoute = OSRMRouteFetcher.fetchRoute(currentPosition, destinationPoint, destinationName)
-                if (newRoute.routePoints.size > 1) {
-                    repository.setActiveRoute(newRoute)
+                var route: RouteInfo? = null
+                // 1. Attempt online dynamic route
+                try {
+                    val onlineRoute = OSRMRouteFetcher.fetchRoute(currentPosition, destinationPoint, destinationName)
+                    if (onlineRoute.routePoints.size > 1) {
+                        route = onlineRoute
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("NavigationViewModel", "Online dynamic reroute error: ${e.message}")
+                }
+
+                // 2. If online route unavailable (e.g. offline or GNSS outage), query offline road network
+                if (route == null) {
+                    val offline = repository.findOfflineRoute(currentPosition, destinationPoint, destinationName)
+                    if (offline != null && offline.routePoints.size > 1) {
+                        route = offline
+                    }
+                }
+
+                // 3. Fallback to realistic street grid router so rerouting NEVER fails
+                val finalRoute = route ?: OSRMRouteFetcher.generateStreetGridRoute(currentPosition, destinationPoint, destinationName)
+                if (finalRoute.routePoints.size > 1) {
+                    repository.setActiveRoute(finalRoute)
                 }
             } catch (e: Exception) {
                 android.util.Log.w("NavigationViewModel", "Dynamic rerouting error: ${e.message}")

@@ -118,11 +118,12 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
         val ax = event.values[0]; val ay = event.values[1]; val az = event.values[2]
         val magnitude = sqrt(ax * ax + ay * ay + az * az)
         val samplingHz = updateSamplingRate(event.timestamp)
-        val stableGravity = abs(magnitude - 9.81f) < 0.18f
+        // Realistic cross-device phone gravity tolerance (9.81 +/- 0.45 m/s^2)
+        val stableGravity = abs(magnitude - 9.81f) < 0.45f
 
         // Instantaneous candidate check debounced via hysteresis filter
         val gyroNorm = gyroMagnitude(_sensorState.value)
-        val isCandidateStationary = (stableGravity && gyroNorm < 0.08f) || externalStationaryHint
+        val isCandidateStationary = (stableGravity && gyroNorm < 0.12f) || externalStationaryHint
         val newStationary = debounceFilter.update(isCandidateStationary)
 
         if (newStationary && stationarySinceNs == 0L) stationarySinceNs = event.timestamp

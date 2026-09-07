@@ -8,6 +8,16 @@ data class CandidateRoad(
     val bearingDegrees: Double = 0.0
 )
 
+data class MapMatchingHistoryItem(
+    val id: Long = System.currentTimeMillis(),
+    val timestampMs: Long = System.currentTimeMillis(),
+    val roadName: String,
+    val distanceFromRoadMeters: Double,
+    val confidencePercentage: Int,
+    val latitude: Double,
+    val longitude: Double
+)
+
 data class MapMatchingState(
     val rawPositionLat: Double = 0.0,
     val rawPositionLon: Double = 0.0,
@@ -17,5 +27,7 @@ data class MapMatchingState(
     val candidateRoads: List<CandidateRoad> = emptyList(),
     val matchConfidencePercentage: Int = 0,
     val distanceFromRoadMeters: Double = 0.0,
-    val candidateCount: Int = 0
+    val candidateCount: Int = 0,
+    val matchHistory: List<MapMatchingHistoryItem> = emptyList()
 )
+

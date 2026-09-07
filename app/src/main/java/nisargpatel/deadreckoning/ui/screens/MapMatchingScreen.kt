@@ -297,5 +297,83 @@ fun MapMatchingScreen(
                 Text(text = "Snapped: $snapLatStr, $snapLonStr", color = SuccessGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Match Transition History Section
+        Text(text = "MATCH TRANSITION HISTORY (${matchingState.matchHistory.size})", color = TextSecondary, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (matchingState.matchHistory.isEmpty()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                color = AutomotiveCardBg,
+                border = BorderStroke(1.dp, AutomotiveCardBorder)
+            ) {
+                Text(
+                    text = "Match history will log road transitions, snap offsets, and confidence as the vehicle travels.",
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        } else {
+            val timeFormat = remember { java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()) }
+            matchingState.matchHistory.forEach { item ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = AutomotiveCardBg,
+                    border = BorderStroke(1.dp, AutomotiveCardBorder)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = timeFormat.format(java.util.Date(item.timestampMs)),
+                                    color = TextSecondary,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = item.roadName,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    maxLines = 1
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Snap offset: ${String.format(java.util.Locale.US, "%.1f", item.distanceFromRoadMeters)}m • (${String.format(java.util.Locale.US, "%.5f", item.latitude)}, ${String.format(java.util.Locale.US, "%.5f", item.longitude)})",
+                                color = TextSecondary,
+                                fontSize = 11.sp
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = (if (item.confidencePercentage > 50) SuccessGreen else PrimaryBlue).copy(alpha = 0.2f)
+                        ) {
+                            Text(
+                                text = "${item.confidencePercentage}%",
+                                color = if (item.confidencePercentage > 50) SuccessGreen else PrimaryBlue,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }

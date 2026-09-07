@@ -659,9 +659,29 @@ class LiveNavigationRepository(
         }
 
         if (pinoModel != null) {
-            val aFwd = if (state.isVehicleFrameValid) state.vehicleAccelForward else state.accelY
-            val wYaw = if (state.isVehicleFrameValid) state.vehicleGyroYaw else state.gyroZ
-            val aLat = if (state.isVehicleFrameValid) state.vehicleAccelRight else state.accelX
+            val aFwd: Float
+            val wYaw: Float
+            val aLat: Float
+            if (state.isStationary || (!hasFreshGnss() && _navigationState.value.speedKmh < 0.3 && _aiState.value.predictedSpeedKmh < 0.5)) {
+                aFwd = 0.0f
+                wYaw = 0.0f
+                aLat = 0.0f
+            } else if (state.isVehicleFrameValid) {
+                aFwd = state.vehicleAccelForward
+                wYaw = state.vehicleGyroYaw
+                aLat = state.vehicleAccelRight
+            } else {
+                // Eliminate static gravity projection from phone-frame acceleration on new / uncalibrated devices
+                val grav = sensorAdapter.gravityVector
+                val gx = grav?.getOrNull(0) ?: 0.0f
+                val gy = grav?.getOrNull(1) ?: 9.81f
+                val gz = grav?.getOrNull(2) ?: 0.0f
+                val linAx = (state.accelX - gx).coerceIn(-8.0f, 8.0f)
+                val linAy = (state.accelY - gy).coerceIn(-8.0f, 8.0f)
+                aFwd = linAy
+                wYaw = state.gyroZ
+                aLat = linAx
+            }
             pinoModel.addSample(
                 timestampNs = timestampNs,
                 aFwd = aFwd,
@@ -1096,6 +1116,22 @@ class LiveNavigationRepository(
         }
 
         Log.i("LiveNavigation", "MapMatching update: pos=(${position.latitude}, ${position.longitude}) -> snapped=\"$selectedRoad\" dist=${String.format(java.util.Locale.US, "%.1f", match.distanceMeters)}m conf=$effectiveConfidence% dr=$isDeadReckoning")
+        val historyEntry = nisargpatel.deadreckoning.domain.state.MapMatchingHistoryItem(
+            id = System.currentTimeMillis(),
+            timestampMs = System.currentTimeMillis(),
+            roadName = selectedRoad,
+            distanceFromRoadMeters = match.distanceMeters,
+            confidencePercentage = effectiveConfidence,
+            latitude = match.point.latitude,
+            longitude = match.point.longitude
+        )
+        val currentHistory = _mapMatchingState.value.matchHistory
+        val updatedHistory = if (currentHistory.isEmpty() || currentHistory.first().roadName != selectedRoad || System.currentTimeMillis() - currentHistory.first().timestampMs > 2000L) {
+            (listOf(historyEntry) + currentHistory).take(50)
+        } else {
+            currentHistory
+        }
+
         _mapMatchingState.value = MapMatchingState(
             rawPositionLat = position.latitude,
             rawPositionLon = position.longitude,
@@ -1112,7 +1148,8 @@ class LiveNavigationRepository(
             },
             matchConfidencePercentage = effectiveConfidence,
             distanceFromRoadMeters = match.distanceMeters,
-            candidateCount = if (roadCandidates.isEmpty()) 1 else roadCandidates.size
+            candidateCount = if (roadCandidates.isEmpty()) 1 else roadCandidates.size,
+            matchHistory = updatedHistory
         )
         _mapState.value = _mapState.value.copy(
             matchedPosition = match.point,
