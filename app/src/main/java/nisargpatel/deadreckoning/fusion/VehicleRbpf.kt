@@ -45,7 +45,9 @@ class VehicleRbpf(
         var speed: Double,
         var crossTrackOffset: Double,
         var crossTrackVar: Double,
-        var weight: Double
+        var weight: Double,
+        var roadBearingRad: Double = bearingRad,
+        var hasRoadConstraint: Boolean = false
     )
 
     private var reference: GeoPoint? = null
@@ -87,7 +89,9 @@ class VehicleRbpf(
                 speed = speedMps.coerceAtLeast(0.0),
                 crossTrackOffset = 0.0,
                 crossTrackVar = 4.0,
-                weight = 1.0 / numParticles
+                weight = 1.0 / numParticles,
+                roadBearingRad = headRad,
+                hasRoadConstraint = true
             )
         }
     }
@@ -102,18 +106,47 @@ class VehicleRbpf(
         val dt = intervalSeconds.coerceIn(0.01, 5.0)
 
         for (p in particles) {
-            // Forward motion along particle's road bearing
-            val d = forwardMeters + random.nextGaussian() * (0.04 * abs(forwardMeters) + 0.2)
-            val dPsi = headingDeltaRadians + random.nextGaussian() * 0.01
+            val d = forwardMeters + random.nextGaussian() * (0.02 * abs(forwardMeters) + 0.1)
+            val dPsi = headingDeltaRadians + random.nextGaussian() * 0.005
             p.bearingRad = MatrixMath.normalizeRadians(p.bearingRad + dPsi)
-
-            // Analytic Gaussian propagation along road axis
-            p.pe += d * sin(p.bearingRad)
-            p.pn += d * cos(p.bearingRad)
             p.speed = (d / dt).coerceAtLeast(0.0)
 
-            // Cross-track variance grows slowly during dead reckoning, clamped to road corridor
-            p.crossTrackVar = (p.crossTrackVar + 0.1 * dt).coerceAtMost(16.0)
+            if (p.hasRoadConstraint) {
+                // Road corridor projection along road axis
+                val roadTheta = p.roadBearingRad
+                val alongE = sin(roadTheta)
+                val alongN = cos(roadTheta)
+                val crossE = cos(roadTheta)
+                val crossN = -sin(roadTheta)
+
+                // Angular difference between vehicle heading and road centerline
+                val headingDiff = MatrixMath.shortestAngleDelta(roadTheta, p.bearingRad)
+
+                // Longitudinal displacement along road manifold
+                val alongDist = d * cos(headingDiff)
+
+                // Cross-track motion (strictly bounded within road lane width)
+                val latDelta = d * sin(headingDiff) + lateralMeters + random.nextGaussian() * 0.1
+
+                // 1D Kalman update on cross-track deviation towards road centerline (pseudo-measurement = 0)
+                val priorVar = (p.crossTrackVar + 0.05 * dt).coerceAtMost(9.0)
+                val rVar = 2.25
+                val k = priorVar / (priorVar + rVar)
+
+                p.crossTrackOffset = ((1.0 - k) * (p.crossTrackOffset + latDelta)).coerceIn(-3.5, 3.5)
+                p.crossTrackVar = (1.0 - k) * priorVar
+
+                // Propagate 2D position along the road manifold
+                p.pe += alongDist * alongE + (p.crossTrackOffset * 0.1) * crossE
+                p.pn += alongDist * alongN + (p.crossTrackOffset * 0.1) * crossN
+
+                // Road heading guidance: soft pull towards road orientation to prevent unbounded yaw drift
+                p.bearingRad = MatrixMath.normalizeRadians(p.bearingRad - 0.15 * headingDiff)
+            } else {
+                p.pe += d * sin(p.bearingRad)
+                p.pn += d * cos(p.bearingRad)
+                p.crossTrackVar = (p.crossTrackVar + 0.1 * dt).coerceAtMost(16.0)
+            }
         }
 
         normalizeWeights()
@@ -127,14 +160,7 @@ class VehicleRbpf(
     ): FusedVehicleState? {
         if (reference == null || intervalSeconds <= 0.0) return null
         val dt = intervalSeconds.coerceIn(0.001, 1.0)
-
-        for (p in particles) {
-            val dist = forwardMps * dt
-            p.pe += dist * sin(p.bearingRad)
-            p.pn += dist * cos(p.bearingRad)
-            p.speed = forwardMps.coerceAtLeast(0.0)
-        }
-        return state()
+        return predict(forwardMps * dt, lateralMps * dt, 0.0, dt)
     }
 
     override fun predictGyro(
@@ -232,9 +258,13 @@ class VehicleRbpf(
                 val alongN = cos(bearingRad)
 
                 val alongDist = (p.pe - measPe) * alongE + (p.pn - measPn) * alongN
-                p.pe = measPe + alongDist * alongE + random.nextGaussian() * 1.5 * crossE
-                p.pn = measPn + alongDist * alongN + random.nextGaussian() * 1.5 * crossN
-                p.crossTrackVar = 4.0
+                val crossDist = (random.nextGaussian() * 0.5).coerceIn(-2.0, 2.0)
+                p.pe = measPe + alongDist * alongE + crossDist * crossE
+                p.pn = measPn + alongDist * alongN + crossDist * crossN
+                p.crossTrackOffset = crossDist
+                p.crossTrackVar = 2.0
+                p.roadBearingRad = bearingRad
+                p.hasRoadConstraint = true
 
                 // Weight based on distance to road + turn rate alignment
                 var w = exp(-0.5 * (cand.distanceMeters * cand.distanceMeters) / 36.0)
@@ -271,14 +301,18 @@ class VehicleRbpf(
         val crossN = -sin(bearingRad)
 
         for (p in particles) {
+            p.hasRoadConstraint = true
+            p.roadBearingRad = bearingRad
+
             val dx = p.pe - measPe
             val dy = p.pn - measPn
             val crossDist = dx * crossE + dy * crossN
 
             // 1D Kalman update of cross-track offset
-            val k = p.crossTrackVar / (p.crossTrackVar + 4.0)
+            val k = p.crossTrackVar / (p.crossTrackVar + 2.25)
             p.pe -= k * crossDist * crossE
             p.pn -= k * crossDist * crossN
+            p.crossTrackOffset = (1.0 - k) * crossDist
             p.crossTrackVar *= (1.0 - k)
 
             p.weight *= exp(-0.5 * (crossDist * crossDist) / 8.0)
