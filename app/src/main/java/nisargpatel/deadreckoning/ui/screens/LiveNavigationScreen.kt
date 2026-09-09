@@ -47,6 +47,7 @@ import nisargpatel.deadreckoning.util.NavigationMapHolder
 import nisargpatel.deadreckoning.util.PlaceSearchHelper
 import nisargpatel.deadreckoning.util.PlaceSuggestion
 import nisargpatel.deadreckoning.util.RouteMapMatcher
+import nisargpatel.deadreckoning.util.RouteRerouteGating
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -191,18 +192,34 @@ fun LiveNavigationScreen(
     }
 
     // Dynamic off-route recalculation check:
-    LaunchedEffect(navState.latitude, navState.longitude, navState.isNavigating, routeInfo.routePoints) {
+    LaunchedEffect(
+        navState.latitude,
+        navState.longitude,
+        navState.isNavigating,
+        navState.mode,
+        navState.outageDurationSeconds,
+        gnssState.usableForFusion,
+        gnssState.isAvailable,
+        routeInfo.routePoints
+    ) {
         if (navState.isNavigating && routeInfo.routePoints.size > 1 && routeInfo.destinationPoint != null && currentVehiclePos != null) {
-            val match = RouteMapMatcher.match(currentVehiclePos, routeInfo.routePoints)
-            val dist = match?.distanceMeters ?: Double.MAX_VALUE
-            if (dist > 30.0) {
-                offRouteTicks++
-                if ((offRouteTicks >= 2 || dist > 50.0) && !isRerouting) {
-                    viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
-                    offRouteTicks = 0
-                }
-            } else {
+            val evaluation = RouteRerouteGating.shouldTriggerReroute(
+                currentPosition = currentVehiclePos,
+                routePoints = routeInfo.routePoints,
+                gnssState = gnssState,
+                navigationState = navState,
+                isRerouting = isRerouting,
+                consecutiveOffRouteCount = offRouteTicks
+            )
+
+            if (evaluation.shouldReroute) {
+                Log.i(TAG, "Triggering dynamic reroute: ${evaluation.reason}")
+                viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
                 offRouteTicks = 0
+            } else if (evaluation.resetTicks) {
+                offRouteTicks = 0
+            } else {
+                offRouteTicks++
             }
         }
     }

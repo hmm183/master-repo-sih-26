@@ -1234,7 +1234,7 @@ class LiveNavigationRepository(
      * Stage 4: trust now comes from the measurement-based quality monitor, update recency,
      * and platform provider availability.
      */
-    private fun hasFreshGnss(): Boolean {
+    override fun hasFreshGnss(): Boolean {
         val usable = gnssMonitor.current().usableForFusion
         val isRecentlyUpdated = lastGnssUpdateMs != 0L && (System.currentTimeMillis() - lastGnssUpdateMs) < 2200L
         val isPlatformAvailable = locationAdapter.isGnssAvailable.value

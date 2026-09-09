@@ -32,6 +32,7 @@ class NavigationViewModel(
     fun startNavigation() = repository.startNavigation()
     fun stopNavigation() = repository.stopNavigation()
     fun startGnssMonitoring() = repository.startGnssMonitoring()
+    fun hasFreshGnss(): Boolean = repository.hasFreshGnss()
 
     fun selectAlternativeRoute(alternativeId: String) {
         val current = selectedRoute.value
@@ -64,6 +65,10 @@ class NavigationViewModel(
 
     fun recalculateRoute(currentPosition: GeoPoint, destinationPoint: GeoPoint, destinationName: String) {
         if (_isRerouting.value) return
+        if (!nisargpatel.deadreckoning.util.RouteRerouteGating.isGnssTrustworthyForReroute(gnssState.value, navigationState.value)) {
+            android.util.Log.w("NavigationViewModel", "Suppressing route recalculation: GNSS is untrusted/blackout; holding route manifold.")
+            return
+        }
         _isRerouting.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {

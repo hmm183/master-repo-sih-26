@@ -24,5 +24,5 @@ interface NavigationRepository {
     fun setActiveRoute(route: RouteInfo)
     fun clearActiveRoute()
     suspend fun findOfflineRoute(start: GeoPoint, end: GeoPoint, destinationName: String): RouteInfo?
-
+    fun hasFreshGnss(): Boolean = true
 }
