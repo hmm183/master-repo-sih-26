@@ -48,7 +48,7 @@ import nisargpatel.deadreckoning.fusion.MapConstraintConfig
 import nisargpatel.deadreckoning.fusion.NonHolonomicConfig
 import nisargpatel.deadreckoning.fusion.TurningConservatismConfig
 import nisargpatel.deadreckoning.fusion.VehicleAlignmentCalibrator
-import nisargpatel.deadreckoning.fusion.VehicleFusionEkf
+import nisargpatel.deadreckoning.fusion.VehicleHierarchicalHybridEstimator
 import nisargpatel.deadreckoning.matching.HiddenMarkovRoadMatcher
 import nisargpatel.deadreckoning.util.RouteMapMatcher
 import nisargpatel.deadreckoning.util.RouteMatch
@@ -111,20 +111,16 @@ class LiveNavigationRepository(
         null
     }
     /**
-     * Configuration is explicit at the call site so the Stage 8 ablation can vary it
-     * without hunting for defaults: heading is propagated by gyro and corrected by the
-     * model, and the non-holonomic constraint suppresses sideslip.
+     * Proposed Hybrid Architecture: IMM-UKF + RBPF + FGO hierarchical fusion.
+     * Replaces standalone EKF with 3-tier road-constrained dead reckoning:
+     *  - Tier 1 (IMM-UKF): Adaptive motion regime detection (CV/CTRV/CA) and ZUPT
+     *  - Tier 2 (RBPF): Multi-hypothesis road polyline manifold tracking
+     *  - Tier 3 (FGO): Sliding-window nonlinear least-squares optimization
      */
-    private val fusion = VehicleFusionEkf(
+    private val fusion = VehicleHierarchicalHybridEstimator(
         headingPolicy = HeadingPolicy.GYRO_WITH_MODEL_UPDATE,
         nonHolonomic = NonHolonomicConfig(),
         mapConstraint = MapConstraintConfig(),
-        // Sharp turns and roundabouts are PINO-DR v3's dominant failure mode in the
-        // offline benchmark (>75 percent drift). Until a retrain with a yaw-residual
-        // head lands, the fusion layer distrusts the model more during hard-turn
-        // windows and leans on the non-holonomic constraint instead. Off by default in
-        // the EKF itself so unit tests and older configurations see no change; enabled
-        // here for the runtime path.
         turningConservatism = TurningConservatismConfig.ENABLED
     )
     private val alignmentCalibrator = VehicleAlignmentCalibrator()
@@ -183,18 +179,35 @@ class LiveNavigationRepository(
     private var lastFusionImuNs = 0L
     private var lastSilenceCheckMs = 0L
 
+    private fun notifyOutageStarted(now: Long) {
+        if (outageStartedAtMs == 0L) {
+            outageStartedAtMs = now
+            outageCount++
+            val alignment = alignmentCalibrator.alignment()
+            Log.i("LiveNavigation", "GNSS OUTAGE STARTED. Alignment confidence: ${alignment.confidencePercentage}% (threshold: $MIN_ALIGNMENT_CONFIDENCE%), yawOffset: ${alignment.yawOffsetDegrees}°")
+            if (alignment.confidencePercentage < MIN_ALIGNMENT_CONFIDENCE) {
+                Log.w("LiveNavigation", "[ALIGNMENT SMOKING GUN] GNSS Outage began with low phone-to-vehicle alignment (${alignment.confidencePercentage}% < $MIN_ALIGNMENT_CONFIDENCE%). Gyro yaw cannot be accurately projected to vehicle frame. Drive straight to calibrate first!")
+                _aiState.value = _aiState.value.copy(
+                    anomalyDetected = "Warning: Low phone alignment (${alignment.confidencePercentage}%). Calibrate with a straight drive."
+                )
+            }
+        }
+    }
+
     init {
         calibrationStore.load()?.let(alignmentCalibrator::restore)
+        calibrationStore.loadGyroBias()?.let(sensorAdapter::loadPersistentGyroBias)
+        sensorAdapter.onGyroBiasPersisted = { bias ->
+            calibrationStore.saveGyroBias(bias)
+            Log.i("LiveNavigation", "ZUPT Stop: Persisted newly re-zeroed gyro bias [${bias[0]}, ${bias[1]}, ${bias[2]}] to CalibrationStore")
+        }
         sensorAdapter.startListening()
         locationAdapter.startLocationUpdates()
         scope.launch {
             locationAdapter.isGnssAvailable.collect { isAvailable ->
                 val now = System.currentTimeMillis()
                 if (!isAvailable) {
-                    if (outageStartedAtMs == 0L) {
-                        outageStartedAtMs = now
-                        outageCount++
-                    }
+                    notifyOutageStarted(now)
                     val assessment = gnssMonitor.onOutageDeclared(now, "Platform GNSS unavailable/disabled")
                     _gnssState.value = _gnssState.value.copy(
                         isAvailable = false,
@@ -396,10 +409,7 @@ class LiveNavigationRepository(
         )
 
         if (!assessment.usableForFusion) {
-            if (outageStartedAtMs == 0L) {
-                outageStartedAtMs = now
-                outageCount++
-            }
+            notifyOutageStarted(now)
             if (_navigationState.value.mode != NavigationMode.AI_DEAD_RECKONING) {
                 _navigationState.value = _navigationState.value.copy(
                     mode = NavigationMode.AI_DEAD_RECKONING,
@@ -731,7 +741,7 @@ class LiveNavigationRepository(
             modelVersion = currentModelVer,
             predictedSpeedKmh = speedKmh,
             speedConfidencePercentage = speedConfidence,
-            motionClassification = if (isStationary) "Stationary" else "Driving",
+            motionClassification = if (isStationary) "Stationary (ZUPT)" else "${fusion.dominantMotionMode} (Hybrid)",
             motionConfidencePercentage = if (isStationary) 98 else ((1.0f - prediction.zuptProbability) * 100).toInt().coerceIn(75, 99),
             inferenceTimeMs = prediction.inferenceTimeMs,
             speedUncertaintyKmh = if (isStationary) 0.05 else 0.5,
@@ -782,8 +792,7 @@ class LiveNavigationRepository(
         ) ?: return
 
         if (outageStartedAtMs == 0L) {
-            outageStartedAtMs = System.currentTimeMillis()
-            outageCount++
+            notifyOutageStarted(System.currentTimeMillis())
         }
 
         val effectiveDrSpeed = filterVehicleSpeed(fused.speedMps * 3.6, isStationary)
@@ -863,7 +872,7 @@ class LiveNavigationRepository(
             modelVersion = currentModelVer,
             predictedSpeedKmh = speedKmh,
             speedConfidencePercentage = speedConfidence,
-            motionClassification = if (isStationary) "Stationary" else prediction.motionClass.label,
+            motionClassification = if (isStationary) "Stationary (ZUPT)" else "${fusion.dominantMotionMode} [${prediction.motionClass.label}]",
             motionConfidencePercentage = if (isStationary) 98 else prediction.motionConfidencePercentage,
             inferenceTimeMs = prediction.inferenceTimeMs,
             speedUncertaintyKmh = if (isStationary) 0.1 else speedSigmaKmh,
@@ -909,8 +918,7 @@ class LiveNavigationRepository(
         ) ?: return
 
         if (outageStartedAtMs == 0L) {
-            outageStartedAtMs = System.currentTimeMillis()
-            outageCount++
+            notifyOutageStarted(System.currentTimeMillis())
         }
 
         val effectiveDrSpeed = filterVehicleSpeed(fused.speedMps * 3.6, isStationary)
@@ -1003,8 +1011,7 @@ class LiveNavigationRepository(
             intervalSeconds = PreprocessingSpec.LEGACY_V8.windowSpanSeconds
         ) ?: return
         if (outageStartedAtMs == 0L) {
-            outageStartedAtMs = System.currentTimeMillis()
-            outageCount++
+            notifyOutageStarted(System.currentTimeMillis())
         }
         val nextOutage = if (outageStartedAtMs != 0L) (System.currentTimeMillis() - outageStartedAtMs) / 1000L else 0L
         val effectiveDrSpeed = filterVehicleSpeed(fused.speedMps * 3.6, isStationary)
@@ -1060,6 +1067,7 @@ class LiveNavigationRepository(
 
         val routeMatch = RouteMapMatcher.match(position, activeRoute)
         val roadCandidates = offlineRoadNetwork.match(position)
+        fusion.updateMapCandidates(roadCandidates)
         val hmmMatch = roadMatcher.update(
             observation = position,
             candidates = roadCandidates,

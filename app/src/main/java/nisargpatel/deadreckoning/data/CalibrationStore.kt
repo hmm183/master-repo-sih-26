@@ -17,4 +17,12 @@ class CalibrationStore(context: Context) {
             preferences.edit().putString("alignment", gson.toJson(alignment)).apply()
         }
     }
+
+    fun loadGyroBias(): FloatArray? = preferences.getString("gyro_bias", null)?.let {
+        runCatching { gson.fromJson(it, FloatArray::class.java) }.getOrNull()
+    }
+
+    fun saveGyroBias(bias: FloatArray) {
+        preferences.edit().putString("gyro_bias", gson.toJson(bias)).apply()
+    }
 }

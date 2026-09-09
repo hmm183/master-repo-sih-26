@@ -324,6 +324,10 @@ class VehicleFusionEkf(
     var rejectedHeadingUpdates = 0
         private set
 
+    /** Tracked duration of consecutive dead-reckoning predictions since last GNSS fix. */
+    var outageSeconds: Double = 0.0
+        private set
+
     override fun isInitialized() = reference != null
 
     override fun reset(position: GeoPoint, speedMps: Double, headingDegrees: Double, accuracyMeters: Double) {
@@ -338,6 +342,7 @@ class VehicleFusionEkf(
         pEastNorth = 0.0
         speedVariance = 4.0
         headingVariance = Math.toRadians(15.0).let { it * it }
+        outageSeconds = 0.0
         anchorWindow()
     }
 
@@ -362,6 +367,8 @@ class VehicleFusionEkf(
         ) {
             return state()
         }
+
+        outageSeconds += intervalSeconds.coerceAtLeast(0.0)
 
         // Displacement is expressed in the frame at the START of the window.
         val rotationHeading = headingAtWindowStartRadians
@@ -524,17 +531,21 @@ class VehicleFusionEkf(
             }
 
             HeadingPolicy.GYRO_WITH_MODEL_UPDATE -> {
-                if (abs(lastHeadingInnovationRadians) > MAX_HEADING_INNOVATION_RADIANS) {
+                // Outage-duration aware innovation gating:
+                // When an outage extends or gyro alignment is imperfect, uncorrected gyro drift
+                // accumulates. A hard gate that unconditionally rejects model innovation causes heading to drift away indefinitely.
+                val dynamicGate = (MAX_HEADING_INNOVATION_RADIANS * (1.0 + 0.05 * outageSeconds)).coerceAtMost(1.8)
+                if (abs(lastHeadingInnovationRadians) > dynamicGate && outageSeconds < 5.0) {
                     rejectedHeadingUpdates++
                 } else {
-                    // Dampen the model's heading correction when the turning gate is
-                    // engaged: on hard turns the model is the least reliable source of
-                    // heading, so gyro should carry more of the load.
                     val engagement = turningEngagement.coerceIn(0.0, 1.0)
                     val gainScale = 1.0 - engagement * (1.0 - turningConservatism.headingMeasurementDampen)
-                    val effectiveGain = HEADING_MEASUREMENT_GAIN * gainScale
+                    // Scale model update weight with outage duration to pull gyro back from drift
+                    val outageBoost = (1.0 + (outageSeconds / 20.0)).coerceAtMost(2.5)
+                    val effectiveGain = (HEADING_MEASUREMENT_GAIN * gainScale * outageBoost).coerceAtMost(0.6)
+                    val boundedInnovation = lastHeadingInnovationRadians.coerceIn(-dynamicGate, dynamicGate)
                     headingRadians = normalizeRadians(
-                        headingRadians + effectiveGain * lastHeadingInnovationRadians
+                        headingRadians + effectiveGain * boundedInnovation
                     )
                     headingVariance *= 1.0 - effectiveGain * 0.5
                 }
@@ -641,6 +652,7 @@ class VehicleFusionEkf(
             reset(position, speedMps, headingDegrees, accuracyMeters)
             return state()
         }
+        outageSeconds = 0.0
         val measurement = toLocal(position)
         val measurementVariance = accuracyMeters.coerceAtLeast(3.0).let { it * it }
 

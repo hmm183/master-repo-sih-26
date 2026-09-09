@@ -19,7 +19,8 @@ import kotlin.math.abs
 class VehicleHierarchicalHybridEstimator(
     private val headingPolicy: HeadingPolicy = HeadingPolicy.GYRO_WITH_MODEL_UPDATE,
     private val nonHolonomic: NonHolonomicConfig = NonHolonomicConfig(),
-    private val mapConstraint: MapConstraintConfig = MapConstraintConfig()
+    private val mapConstraint: MapConstraintConfig = MapConstraintConfig(),
+    private val turningConservatism: TurningConservatismConfig = TurningConservatismConfig.DISABLED
 ) : VehicleEstimator {
 
     override val name: String = "Proposed Hybrid (IMM-UKF + RBPF + FGO)"
@@ -29,6 +30,8 @@ class VehicleHierarchicalHybridEstimator(
     val fgo = VehicleSlidingWindowFgo(windowSize = 15)
 
     private var reference: GeoPoint? = null
+    var outageDurationSeconds: Double = 0.0
+        private set
 
     val currentModeProbabilities: DoubleArray
         get() = immUkf.modeProbabilities
@@ -48,6 +51,7 @@ class VehicleHierarchicalHybridEstimator(
         accuracyMeters: Double
     ) {
         reference = position
+        outageDurationSeconds = 0.0
         immUkf.reset(position, speedMps, headingDegrees, accuracyMeters)
         rbpf.reset(position, speedMps, headingDegrees, accuracyMeters)
         fgo.reset(position, speedMps, headingDegrees, accuracyMeters)
@@ -60,6 +64,7 @@ class VehicleHierarchicalHybridEstimator(
         intervalSeconds: Double
     ): FusedVehicleState? {
         if (reference == null) return null
+        outageDurationSeconds += intervalSeconds.coerceAtLeast(0.0)
 
         // Tier 1: Motion regime and kinematic prediction
         val immState = immUkf.predict(forwardMeters, lateralMeters, headingDeltaRadians, intervalSeconds)
@@ -127,6 +132,7 @@ class VehicleHierarchicalHybridEstimator(
         headingDegrees: Double,
         accuracyMeters: Double
     ): FusedVehicleState {
+        outageDurationSeconds = 0.0
         immUkf.updateGnss(position, speedMps, headingDegrees, accuracyMeters)
         rbpf.updateGnss(position, speedMps, headingDegrees, accuracyMeters)
         fgo.updateGnss(position, speedMps, headingDegrees, accuracyMeters)

@@ -82,6 +82,19 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
     internal val debounceFilter = StationaryDebounceFilter()
     internal val biasEstimator = GyroBiasEstimator()
 
+    /** Callback invoked when ZUPT / stationary periods produce a newly re-zeroed gyro bias. */
+    var onGyroBiasPersisted: ((FloatArray) -> Unit)? = null
+
+    init {
+        biasEstimator.onBiasUpdated = { bias ->
+            onGyroBiasPersisted?.invoke(bias)
+        }
+    }
+
+    fun loadPersistentGyroBias(bias: FloatArray) {
+        biasEstimator.setPersistentBias(bias)
+    }
+
     /** External stationary hint from AI model (ZUPT / motion classification). */
     @Volatile
     var externalStationaryHint: Boolean = false
@@ -263,13 +276,20 @@ class StationaryDebounceFilter(
 class GyroBiasEstimator(
     val bootstrapLimit: Int = 60,
     val historyLimit: Int = 150,
-    val minSamplesForEstimate: Int = 30
+    val minSamplesForEstimate: Int = 30,
+    var onBiasUpdated: ((FloatArray) -> Unit)? = null
 ) {
     private val stationaryGyros = ArrayDeque<FloatArray>()
     var gyroBias = FloatArray(3)
         private set
     var bootstrapSampleCount = 0
         private set
+
+    fun setPersistentBias(savedBias: FloatArray) {
+        if (savedBias.size == 3) {
+            gyroBias = savedBias.clone()
+        }
+    }
 
     fun addSample(
         rawGyro: FloatArray,
@@ -294,7 +314,9 @@ class GyroBiasEstimator(
         stationaryGyros += raw.clone()
         while (stationaryGyros.size > historyLimit) stationaryGyros.removeFirst()
         if (stationaryGyros.size < minSamplesForEstimate) return
-        gyroBias = FloatArray(3) { axis -> stationaryGyros.map { it[axis] }.average().toFloat() }
+        val newBias = FloatArray(3) { axis -> stationaryGyros.map { it[axis] }.average().toFloat() }
+        gyroBias = newBias
+        onBiasUpdated?.invoke(newBias.clone())
     }
 
     fun reset() {
