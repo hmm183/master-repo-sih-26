@@ -422,13 +422,20 @@ fun LiveNavigationScreen(
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
                             text = when {
+                                isOutage && !sensorState.isVehicleFrameValid -> "• Uncalibrated"
                                 isOutage -> "• Outage"
                                 navState.mode == NavigationMode.GNSS_RECOVERY -> "• Reacquire"
-                                else -> "• Hybrid"
+                                sensorState.isVehicleFrameValid -> "• Calibrated"
+                                else -> "• Calib ${sensorState.alignmentConfidencePercentage}%"
                             },
                             fontWeight = FontWeight.Normal,
                             fontSize = 10.5.sp,
-                            color = Color(0xFF64748B)
+                            color = when {
+                                isOutage && !sensorState.isVehicleFrameValid -> Color(0xFFDC2626)
+                                sensorState.isVehicleFrameValid -> Color(0xFF059669)
+                                isOutage -> Color(0xFFD97706)
+                                else -> Color(0xFF64748B)
+                            }
                         )
                     }
                 }
@@ -634,8 +641,12 @@ fun LiveNavigationScreen(
                                 fontSize = 12.5.sp
                             )
                             Text(
-                                text = "AI Dead Reckoning Active • Outage: ${navState.outageDurationSeconds}s",
-                                color = Color.White.copy(alpha = 0.9f),
+                                text = if (sensorState.isVehicleFrameValid) {
+                                    "AI Dead Reckoning Active (${sensorState.alignmentConfidencePercentage}% calib) • Outage: ${navState.outageDurationSeconds}s"
+                                } else {
+                                    "⚠️ Uncalibrated (${sensorState.alignmentConfidencePercentage}% < 55%) • Gyro bypass active • Outage: ${navState.outageDurationSeconds}s"
+                                },
+                                color = if (sensorState.isVehicleFrameValid) Color.White.copy(alpha = 0.9f) else Color(0xFFFEF08A),
                                 fontSize = 11.sp
                             )
                         }

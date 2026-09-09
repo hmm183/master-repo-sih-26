@@ -38,6 +38,7 @@ fun CalibrationScreen(
     val sensorState by viewModel.sensorState.collectAsState()
     val gnssState by viewModel.gnssState.collectAsState()
     val readiness = sensorState.overallHealthPercentage
+    val isAlignmentReady = sensorState.isVehicleFrameValid
     CommandScreen {
         PageHeader(
             title = "Pre-drive Calibration",
@@ -57,7 +58,15 @@ fun CalibrationScreen(
             CalibrationCheckItem(title = "IMU sampling", status = "${sensorState.imuSamplingHz} Hz")
             CalibrationCheckItem(title = "GNSS", status = gnssState.fixStatus)
             CalibrationCheckItem(title = "Mount stability", status = "${sensorState.mountStabilityPercentage}%")
-            CalibrationCheckItem(title = "Vehicle-frame yaw", status = "${String.format("%.1f", sensorState.yawAlignmentOffsetDegrees)} deg (${sensorState.alignmentConfidencePercentage}%)")
+            CalibrationCheckItem(
+                title = "Vehicle-frame yaw",
+                status = if (isAlignmentReady) {
+                    "${String.format("%.1f", sensorState.yawAlignmentOffsetDegrees)}° (${sensorState.alignmentConfidencePercentage}%)"
+                } else {
+                    "Calibrating (${sensorState.alignmentConfidencePercentage}% < 55%)"
+                },
+                isReadyOverride = isAlignmentReady
+            )
         }
 
         CommandPanel(color = RoadInk, borderColor = DividerSoft) {
@@ -65,7 +74,7 @@ fun CalibrationScreen(
             DataRow("Phone holder", "Locked and stable", SuccessGreen)
             DataRow("Magnetic interference", "Keep clear")
             DividerLine()
-            DataRow("Heading calibration", "Drive straight for 10 sec", PrimaryBlue)
+            DataRow("Heading calibration", "Drive straight >8 km/h for 30s", if (isAlignmentReady) SuccessGreen else PrimaryBlue)
         }
 
         Button(
@@ -90,9 +99,10 @@ private fun availability(available: Boolean) = if (available) "Available" else "
 @Composable
 private fun CalibrationCheckItem(
     title: String,
-    status: String
+    status: String,
+    isReadyOverride: Boolean? = null
 ) {
-    val isReady = !status.contains("Unavailable", ignoreCase = true) && !status.contains("No fix", ignoreCase = true)
+    val isReady = isReadyOverride ?: (!status.contains("Unavailable", ignoreCase = true) && !status.contains("No fix", ignoreCase = true) && !status.contains("Calibrating", ignoreCase = true))
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -100,9 +110,9 @@ private fun CalibrationCheckItem(
     ) {
         Text(text = title, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = if (isReady) SuccessGreen else ErrorRed, modifier = Modifier.size(18.dp))
+            Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = if (isReady) SuccessGreen else WarningAmber, modifier = Modifier.size(18.dp))
             Spacer(modifier = Modifier.width(6.dp))
-            Text(text = status, color = if (isReady) SuccessGreen else ErrorRed, fontWeight = FontWeight.Black, fontSize = 12.sp)
+            Text(text = status, color = if (isReady) SuccessGreen else WarningAmber, fontWeight = FontWeight.Black, fontSize = 12.sp)
         }
     }
 }
