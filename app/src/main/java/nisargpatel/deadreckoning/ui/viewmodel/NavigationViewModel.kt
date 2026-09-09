@@ -65,7 +65,7 @@ class NavigationViewModel(
 
     fun recalculateRoute(currentPosition: GeoPoint, destinationPoint: GeoPoint, destinationName: String) {
         if (_isRerouting.value) return
-        if (!nisargpatel.deadreckoning.util.RouteRerouteGating.isGnssTrustworthyForReroute(gnssState.value, navigationState.value)) {
+        if (!nisargpatel.deadreckoning.util.RouteRerouteGating.isGnssTrustworthyForReroute(gnssState.value, navigationState.value, hasFreshGnss())) {
             android.util.Log.w("NavigationViewModel", "Suppressing route recalculation: GNSS is untrusted/blackout; holding route manifold.")
             return
         }

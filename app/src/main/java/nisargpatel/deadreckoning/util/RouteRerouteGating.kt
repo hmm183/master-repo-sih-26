@@ -26,12 +26,14 @@ object RouteRerouteGating {
     const val DEFAULT_IMMEDIATE_THRESHOLD_METERS = 50.0
 
     /**
-     * True only when GNSS is active, usable for fusion, not denied, and not in an outage.
+     * True only when GNSS is active, usable for fusion, has fresh fixes, not denied, and not in an outage.
      */
     fun isGnssTrustworthyForReroute(
         gnssState: GNSSState,
-        navigationState: NavigationState
+        navigationState: NavigationState,
+        hasFreshGnss: Boolean = true
     ): Boolean {
+        if (!hasFreshGnss) return false
         if (!gnssState.isAvailable) return false
         if (!gnssState.usableForFusion) return false
         if (navigationState.mode == NavigationMode.AI_DEAD_RECKONING) return false
@@ -50,9 +52,11 @@ object RouteRerouteGating {
         baseThresholdMeters: Double = DEFAULT_BASE_THRESHOLD_METERS,
         immediateThresholdMeters: Double = DEFAULT_IMMEDIATE_THRESHOLD_METERS
     ): Pair<Double, Double> {
-        val horizontalUncertainty = kotlin.math.sqrt(
-            navigationState.crossTrackUncertaintyMeters * navigationState.crossTrackUncertaintyMeters +
-            navigationState.alongTrackUncertaintyMeters * navigationState.alongTrackUncertaintyMeters
+        val horizontalUncertainty = navigationState.accuracyMeters.coerceAtLeast(
+            kotlin.math.sqrt(
+                navigationState.crossTrackUncertaintyMeters * navigationState.crossTrackUncertaintyMeters +
+                navigationState.alongTrackUncertaintyMeters * navigationState.alongTrackUncertaintyMeters
+            )
         ).coerceAtLeast(0.0)
 
         val effectiveBase = baseThresholdMeters.coerceAtLeast(horizontalUncertainty * 1.5)
@@ -69,7 +73,8 @@ object RouteRerouteGating {
         gnssState: GNSSState,
         navigationState: NavigationState,
         isRerouting: Boolean,
-        consecutiveOffRouteCount: Int
+        consecutiveOffRouteCount: Int,
+        hasFreshGnss: Boolean = true
     ): RerouteEvaluation {
         if (isRerouting) {
             return RerouteEvaluation(shouldReroute = false, resetTicks = false, reason = "Rerouting already in progress")
@@ -79,11 +84,11 @@ object RouteRerouteGating {
         }
 
         // Gate 1: GNSS quality & outage gate. During outages, hold route for RBPF/map matching.
-        if (!isGnssTrustworthyForReroute(gnssState, navigationState)) {
+        if (!isGnssTrustworthyForReroute(gnssState, navigationState, hasFreshGnss)) {
             return RerouteEvaluation(
                 shouldReroute = false,
                 resetTicks = true,
-                reason = "GNSS untrusted/outage (mode=${navigationState.mode}, quality=${gnssState.quality}, outage=${navigationState.outageDurationSeconds}s); holding route"
+                reason = "GNSS untrusted/outage (fresh=$hasFreshGnss, mode=${navigationState.mode}, quality=${gnssState.quality}, outage=${navigationState.outageDurationSeconds}s); holding route"
             )
         }
 

@@ -36,7 +36,7 @@ class RerouteGatingTest {
         // Trustworthiness check MUST fail during blackout
         assertFalse(
             "GNSS must NOT be trustworthy during blackout",
-            RouteRerouteGating.isGnssTrustworthyForReroute(blackoutGnss, blackoutNav)
+            RouteRerouteGating.isGnssTrustworthyForReroute(blackoutGnss, blackoutNav, hasFreshGnss = false)
         )
 
         // DR position drifts 60m East of the road centerline
@@ -50,7 +50,8 @@ class RerouteGatingTest {
             gnssState = blackoutGnss,
             navigationState = blackoutNav,
             isRerouting = false,
-            consecutiveOffRouteCount = 0
+            consecutiveOffRouteCount = 0,
+            hasFreshGnss = false
         )
         assertFalse("Reroute must NOT fire from DR drift during blackout", eval1.shouldReroute)
         assertTrue("Ticks should be reset to prevent stale accumulation", eval1.resetTicks)
@@ -64,7 +65,8 @@ class RerouteGatingTest {
             gnssState = blackoutGnss,
             navigationState = blackoutNav,
             isRerouting = false,
-            consecutiveOffRouteCount = 5
+            consecutiveOffRouteCount = 5,
+            hasFreshGnss = false
         )
         assertFalse("Reroute must remain suppressed even under extreme DR drift", eval2.shouldReroute)
     }
@@ -193,5 +195,39 @@ class RerouteGatingTest {
             consecutiveOffRouteCount = 0
         )
         assertFalse("Must not trigger another reroute while already rerouting", eval.shouldReroute)
+    }
+
+    @Test
+    fun rerouteSuppressedWhenHasFreshGnssIsFalseEvenIfGpsStateLooksAvailable() {
+        // Given: GNSS is marked available, but fresh fixes stopped arriving (e.g. GnssQualityMonitor timeout)
+        val staleGnss = GNSSState(
+            isAvailable = true,
+            usableForFusion = true,
+            quality = GnssQuality.DEGRADED,
+            outageDurationSeconds = 0L
+        )
+        val navState = NavigationState(
+            isNavigating = true,
+            mode = NavigationMode.GNSS_INS
+        )
+
+        assertFalse(
+            "GNSS must be untrustworthy when hasFreshGnss is false",
+            RouteRerouteGating.isGnssTrustworthyForReroute(staleGnss, navState, hasFreshGnss = false)
+        )
+
+        val offRoutePos = GeoPoint(12.9750, 77.5900 + 0.001)
+        val eval = RouteRerouteGating.shouldTriggerReroute(
+            currentPosition = offRoutePos,
+            routePoints = routePoints,
+            gnssState = staleGnss,
+            navigationState = navState,
+            isRerouting = false,
+            consecutiveOffRouteCount = 2,
+            hasFreshGnss = false
+        )
+        assertFalse("Reroute must NOT fire when hasFreshGnss is false", eval.shouldReroute)
+        assertTrue("Ticks should be reset", eval.resetTicks)
+        assertTrue(eval.reason.contains("fresh=false"))
     }
 }

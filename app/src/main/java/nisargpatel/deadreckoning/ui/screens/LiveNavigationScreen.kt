@@ -200,26 +200,40 @@ fun LiveNavigationScreen(
         navState.outageDurationSeconds,
         gnssState.usableForFusion,
         gnssState.isAvailable,
+        gnssState.quality,
         routeInfo.routePoints
     ) {
         if (navState.isNavigating && routeInfo.routePoints.size > 1 && routeInfo.destinationPoint != null && currentVehiclePos != null) {
-            val evaluation = RouteRerouteGating.shouldTriggerReroute(
-                currentPosition = currentVehiclePos,
-                routePoints = routeInfo.routePoints,
-                gnssState = gnssState,
-                navigationState = navState,
-                isRerouting = isRerouting,
-                consecutiveOffRouteCount = offRouteTicks
-            )
+            // ── GNSS Outage / Quality Gate ─────────────────────────────────────────
+            // During GNSS blackout, currentVehiclePos is an unconfirmed dead-reckoned estimate.
+            // DR drift (>30-50m) must NEVER trigger an automatic route recalculation during an outage;
+            // hold the planned route and let RBPF and map-matching pull particles back onto the road manifold.
+            val isGnssTrustworthy = viewModel.hasFreshGnss() &&
+                RouteRerouteGating.isGnssTrustworthyForReroute(gnssState, navState, viewModel.hasFreshGnss())
 
-            if (evaluation.shouldReroute) {
-                Log.i(TAG, "Triggering dynamic reroute: ${evaluation.reason}")
-                viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
+            if (!isGnssTrustworthy) {
                 offRouteTicks = 0
-            } else if (evaluation.resetTicks) {
-                offRouteTicks = 0
-            } else {
+                return@LaunchedEffect
+            }
+
+            // ── Geometric match against active route geometry ──────────────────────
+            val match = RouteMapMatcher.match(currentVehiclePos, routeInfo.routePoints)
+            val dist = match?.distanceMeters ?: Double.MAX_VALUE
+
+            // ── Uncertainty-Aware Thresholds ───────────────────────────────────────
+            // Incorporate estimator horizontal covariance so GPS reacquisition noise
+            // does not trigger a false reroute until the position fix settles.
+            val (baseThreshold, immediateThreshold) = RouteRerouteGating.computeOffRouteThresholds(navState)
+
+            if (dist > baseThreshold) {
                 offRouteTicks++
+                if ((offRouteTicks >= 2 || dist > immediateThreshold) && !isRerouting) {
+                    Log.i(TAG, "Confirmed GPS off-route deviation (${String.format("%.1f", dist)}m > threshold ${String.format("%.1f", if (dist > immediateThreshold) immediateThreshold else baseThreshold)}m). Recalculating route.")
+                    viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
+                    offRouteTicks = 0
+                }
+            } else {
+                offRouteTicks = 0
             }
         }
     }

@@ -89,23 +89,24 @@ class LiveNavigationRepository(
      * primary model would be worse than running no model at all.
      */
     /**
-     * Primary on-device dead reckoning model: PINO-DR v3 (Physics-Informed Neural Operator).
-     * 4-channel input [a_fwd, w_yaw, a_lat, v_prev] with kinematic residual skip connection
-     * and multi-task ZUPT hysteresis gate that eliminates standstill drift and runaway speed.
-     * IDR-V1 and V8 kept as fallbacks.
+     * Primary on-device dead reckoning model: IDR-V1 (Trained Heteroscedastic Uncertainty).
+     * Outperforms PINO by 3-4x in blackout error (14.4m vs 84.5m @ 10s; 92.9m vs 536.6m @ 30s)
+     * and outputs dynamic per-step uncertainty for the fusion filter.
+     * PINO-DR v3 and V8 are kept as fallbacks.
      */
-    private val pinoModel = runCatching { PinoDrMotionEngine(context) }
-        .onSuccess { Log.i("LiveNavigation", "Loaded PINO-DR v3 ONNX model") }
-        .onFailure { Log.w("LiveNavigation", "PINO-DR v3 unavailable, falling back to IDR-V1", it) }
+    private val idrModel = runCatching { IdrMotionEngine(context) }
+        .onSuccess { Log.i("LiveNavigation", "Loaded IDR-V1 primary motion engine") }
+        .onFailure { Log.w("LiveNavigation", "IDR-V1 unavailable, falling back to PINO-DR", it) }
         .getOrNull()
-    private val idrModel = if (pinoModel == null) {
-        runCatching { IdrMotionEngine(context) }
-            .onFailure { Log.w("LiveNavigation", "IDR-V1 unavailable, falling back to V8", it) }
+    private val pinoModel = if (idrModel == null) {
+        runCatching { PinoDrMotionEngine(context) }
+            .onSuccess { Log.i("LiveNavigation", "Loaded PINO-DR v3 ONNX fallback model") }
+            .onFailure { Log.w("LiveNavigation", "PINO-DR v3 unavailable, falling back to V8", it) }
             .getOrNull()
     } else {
         null
     }
-    private val model = if (pinoModel == null && idrModel == null) {
+    private val model = if (idrModel == null && pinoModel == null) {
         runCatching { V8DeadReckoningEngine(context) }.getOrNull()
     } else {
         null
@@ -674,7 +675,13 @@ class LiveNavigationRepository(
             _aiState.value.predictedSpeedKmh / 3.6
         }
 
-        if (pinoModel != null) {
+        if (idrModel != null) {
+            idrModel.addSample(
+                timestampNs, state.accelX, state.accelY, state.accelZ,
+                state.gyroX, state.gyroY, state.gyroZ,
+                sensorAdapter.gravityVector, seedSpeed.toFloat()
+            )?.let(::applyIdrPrediction)
+        } else if (pinoModel != null) {
             val aFwd: Float
             val wYaw: Float
             val aLat: Float
@@ -705,12 +712,6 @@ class LiveNavigationRepository(
                 aLat = aLat,
                 seedVelocityMps = seedSpeed.toFloat()
             )?.let(::applyPinoPrediction)
-        } else if (idrModel != null) {
-            idrModel.addSample(
-                timestampNs, state.accelX, state.accelY, state.accelZ,
-                state.gyroX, state.gyroY, state.gyroZ,
-                sensorAdapter.gravityVector, seedSpeed.toFloat()
-            )?.let(::applyIdrPrediction)
         } else {
             model?.addSample(
                 timestampNs, state.accelX, state.accelY, state.accelZ,
@@ -780,7 +781,12 @@ class LiveNavigationRepository(
         }
 
         val effectiveSpeedMps = if (isStationary) 0.0 else (speedKmh / 3.6)
-        fusion.updateSpeed(effectiveSpeedMps, if (isStationary) 0.05 else 0.3)
+        val pinoSpeedUncertainty = if (isStationary) {
+            0.05
+        } else {
+            (0.15 + (1.0 - (speedConfidence / 100.0).coerceIn(0.0, 1.0)) * 0.85).coerceIn(0.1, 2.0)
+        }
+        fusion.updateSpeed(effectiveSpeedMps, pinoSpeedUncertainty)
 
         val stepForwardMeters = if (isStationary) 0.0 else prediction.stepForwardMeters.toDouble()
         val stepHeadingDeltaRadians = if (isStationary) 0.0 else prediction.stepHeadingDeltaRadians.toDouble()
