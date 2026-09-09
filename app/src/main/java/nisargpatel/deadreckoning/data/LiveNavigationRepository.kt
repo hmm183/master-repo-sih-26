@@ -143,9 +143,9 @@ class LiveNavigationRepository(
     override val gnssState: StateFlow<GNSSState> = _gnssState.asStateFlow()
     private val _aiState = MutableStateFlow(
         AIState(
-            isModelLoaded = pinoModel != null || idrModel != null || model != null,
-            modelVersion = pinoModel?.manifest?.deployment_status
-                ?: idrModel?.let { "${it.manifest.model} (${it.manifest.preprocessing_version})" }
+            isModelLoaded = idrModel != null || pinoModel != null || model != null,
+            modelVersion = idrModel?.let { "${it.manifest.model} (${it.manifest.preprocessing_version})" }
+                ?: pinoModel?.manifest?.deployment_status
                 ?: model?.manifest?.deployment_status
                 ?: "Unavailable"
         )
