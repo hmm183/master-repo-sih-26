@@ -487,6 +487,12 @@ class LiveNavigationRepository(
             speedKmh = state.speedKmh,
             accuracyMeters = state.accuracyMeters
         )
+        if (state.speedKmh >= 8.0 && state.accuracyMeters <= 18.0) {
+            Log.d("LiveNavigation", "[ALIGNMENT TRACKER] Samples: ${alignment.sampleCount}/12 | Speed: ${String.format("%.1f", state.speedKmh)} km/h | Confidence: ${alignment.confidencePercentage}% (Need >= 55% for DR, >= 70% to persist)")
+            if (alignment.confidencePercentage in 55..65 && alignment.sampleCount <= 8) {
+                Log.i("LiveNavigation", "[ALIGNMENT READY] Alignment reached ${alignment.confidencePercentage}% (>= 55%)! Phone-to-vehicle frame unlocked. Ready for GNSS blackout test.")
+            }
+        }
         calibrationStore.save(alignment)
         _sensorState.value = _sensorState.value.copy(
             vehicleHeadingDegrees = alignmentCalibrator.adjustedHeading(_sensorState.value.yawDegrees).toFloat(),
