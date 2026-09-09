@@ -224,7 +224,8 @@ class VehicleFusionEkf(
     private val nonHolonomic: NonHolonomicConfig = NonHolonomicConfig(),
     private val mapConstraint: MapConstraintConfig = MapConstraintConfig(),
     private val turningConservatism: TurningConservatismConfig = TurningConservatismConfig.DISABLED
-) {
+) : VehicleEstimator {
+    override val name: String = "EKF"
     private companion object {
         /** Weight applied to the model-versus-gyro heading disagreement. */
         const val HEADING_MEASUREMENT_GAIN = 0.35
@@ -323,9 +324,9 @@ class VehicleFusionEkf(
     var rejectedHeadingUpdates = 0
         private set
 
-    fun isInitialized() = reference != null
+    override fun isInitialized() = reference != null
 
-    fun reset(position: GeoPoint, speedMps: Double, headingDegrees: Double, accuracyMeters: Double) {
+    override fun reset(position: GeoPoint, speedMps: Double, headingDegrees: Double, accuracyMeters: Double) {
         reference = position
         eastMeters = 0.0
         northMeters = 0.0
@@ -348,7 +349,7 @@ class VehicleFusionEkf(
      * @param headingDeltaRadians the window's total heading change as predicted by the model.
      * @param intervalSeconds the time the window actually spans, used to derive speed.
      */
-    fun predict(
+    override fun predict(
         forwardMeters: Double,
         lateralMeters: Double,
         headingDeltaRadians: Double,
@@ -558,7 +559,7 @@ class VehicleFusionEkf(
      *   an unconstrained sideways velocity.
      * @param intervalSeconds elapsed time since the previous velocity propagation.
      */
-    fun predictVelocity(
+    override fun predictVelocity(
         forwardMps: Double,
         lateralMps: Double,
         intervalSeconds: Double
@@ -598,7 +599,7 @@ class VehicleFusionEkf(
      *   what lets a doubtful prediction contribute less, instead of every prediction being
      *   trusted equally as the previous code did.
      */
-    fun updateSpeed(measuredMps: Double, uncertaintyMps: Double): FusedVehicleState? {
+    override fun updateSpeed(measuredMps: Double, uncertaintyMps: Double): FusedVehicleState? {
         if (reference == null) return null
         if (!measuredMps.isFinite() || !uncertaintyMps.isFinite()) return null
         val measurementVariance = (uncertaintyMps * uncertaintyMps).coerceAtLeast(0.05)
@@ -614,7 +615,7 @@ class VehicleFusionEkf(
      * @param angularVelocityZRadPerSec yaw rate about the vehicle **Down** axis, which
      *   equals dHeading/dt. Must come from the vehicle frame, not raw device axes.
      */
-    fun predictGyro(angularVelocityZRadPerSec: Double, intervalSeconds: Double): FusedVehicleState? {
+    override fun predictGyro(angularVelocityZRadPerSec: Double, intervalSeconds: Double): FusedVehicleState? {
         if (reference == null || intervalSeconds <= 0.0 || intervalSeconds > 0.25) return null
         if (!angularVelocityZRadPerSec.isFinite()) return null
         val delta = angularVelocityZRadPerSec * intervalSeconds
@@ -630,7 +631,7 @@ class VehicleFusionEkf(
         return state()
     }
 
-    fun updateGnss(
+    override fun updateGnss(
         position: GeoPoint,
         speedMps: Double,
         headingDegrees: Double,
@@ -703,7 +704,7 @@ class VehicleFusionEkf(
      * @param roadBearingDegrees road direction, 0 = North. When null the road orientation
      *   is unknown, so no correction is applied rather than guessing isotropically.
      */
-    fun updateMapConstraint(
+    override fun updateMapConstraint(
         matchedPosition: GeoPoint,
         roadBearingDegrees: Double?,
         confidence: Int
@@ -824,7 +825,7 @@ class VehicleFusionEkf(
         }
     }
 
-    fun state(): FusedVehicleState {
+    override fun state(): FusedVehicleState {
         val ref = checkNotNull(reference)
         val latitude = ref.latitude + northMeters / 111_111.0
         val longitude = ref.longitude + eastMeters / (111_111.0 * cos(Math.toRadians(ref.latitude)))
