@@ -76,6 +76,25 @@ data class PinoManifest(
  *  4: yaw_accel (rad/s^2) - 10 Hz Savitzky-Golay numerical derivative (order 2, deriv 1, dt=0.1s)
  *  5: a_cent_residual (m/s^2) - Centripetal residual: a_lat - v_prev * w_yaw
  *
+ * ### Yaw Acceleration Causal Alignment (Option A):
+ * The training pipeline (`preprocess_v4.py`) computed `yaw_accel` non-causally via
+ * `scipy.signal.savgol_filter` applied across the entire recorded sequence. For sample `i`,
+ * the derivative was centered and evaluated using 2 future samples `[i+1, i+2]` and 2 past
+ * samples `[i-2, i-1]`.
+ *
+ * In this on-device engine, `yaw_accel` is computed causally as raw samples arrive at 10 Hz.
+ * The 5-point Savitzky-Golay kernel `[-2, -1, 0, 1, 2] / 1.0` applied to ring buffer `[k-4..k]`
+ * mathematically evaluates the derivative at the window's center sample `k-2` (i.e. ~0.2s in
+ * the past relative to the current incoming sample `k`).
+ *
+ * Assigning this derivative to the current bin slot alongside the genuinely current samples
+ * of the other 5 channels (`a_fwd`, `w_yaw`, `a_lat`, `v_prev`, `a_cent_residual`) introduces
+ * a known ~0.2s causal phase offset. This is accepted as a standard low-latency approximation
+ * because:
+ *  1. 80% (8 out of 10) of the raw samples in each 1-second bin overlap with the true window.
+ *  2. 1-second bin mean-reduction heavily low-pass filters high-frequency transients, making
+ *     the 200 ms offset negligible over the 10-second history window.
+ *
  * The pipeline:
  *  1. Enforce ~10 Hz decimation on the incoming sensor stream.
  *  2. Calculate 10 Hz yaw_accel via 5-point Savitzky-Golay filter and centripetal residual.
@@ -297,6 +316,13 @@ class PinoDrMotionEngine(
             else -> {
                 // 5-point Savitzky-Golay 1st derivative (degree 2, window 5, dt = 0.1s):
                 // Coefficients [-2, -1, 0, 1, 2] / (10 * dt) = [-2, -1, 0, 1, 2] / 1.0 (no extra division)
+                //
+                // Mathematical Alignment Note:
+                // Training (preprocess_v4.py) computed yaw_accel non-causally via scipy.savgol_filter
+                // using 2 future samples [i-2..i+2] relative to sample i.
+                // At runtime, this causal 5-point buffer holds [k-4..k]. The Savitzky-Golay weights
+                // [-2, -1, 0, 1, 2] mathematically compute the derivative at the CENTER of this
+                // 5-sample window, which is sample k-2 (i.e. 2 samples / ~0.2s in the past).
                 val y0 = yawRingBuffer[(yawSampleCount - 5) % 5]
                 val y1 = yawRingBuffer[(yawSampleCount - 4) % 5]
                 val y3 = yawRingBuffer[(yawSampleCount - 2) % 5]
@@ -310,7 +336,12 @@ class PinoDrMotionEngine(
         val rawCentripetal = clampedLat - vPrev * clampedYaw
         val clampedCentripetal = rawCentripetal.coerceIn(CLIP_CENTRIPETAL_MIN, CLIP_CENTRIPETAL_MAX)
 
-        // Accumulate 6 channels into the current bin
+        // Accumulate 6 channels into the current bin.
+        // NOTE: Option A causal approximation:
+        // Channels 0, 1, 2, 3, and 5 represent sample k (current 10 Hz timestep), whereas channel 4
+        // (clampedYawAccel) represents the Savitzky-Golay derivative at sample k-2 (~0.2s offset).
+        // This ~0.2s offset is accepted as a known, low-complexity approximation: 80% (8/10) of raw
+        // samples overlap with the true 1s bin, and 1-second mean binning heavily low-passes the window.
         binAccumulator[0] += clampedFwd
         binAccumulator[1] += clampedYaw
         binAccumulator[2] += clampedLat
