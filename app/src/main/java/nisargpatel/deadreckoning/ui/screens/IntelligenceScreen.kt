@@ -50,24 +50,28 @@ fun IntelligenceScreen(
         // ── 1. Top Header ──────────────────────────────────────────────────
         IntelligenceTopHeader(
             isModelLoaded = aiState.isModelLoaded,
+            modelVersion = aiState.modelVersion,
             inferenceTimeMs = aiState.inferenceTimeMs
         )
 
         // ── 2. Hero Luxury AI Neural Core Card ─────────────────────────────
-        val isStationary = aiState.motionClassification.equals("Stationary", ignoreCase = true) || navState.speedKmh < 0.5
-        val liveSpeed = if (isStationary) 0.0 else if (aiState.predictedSpeedKmh >= 0.5) aiState.predictedSpeedKmh else navState.speedKmh
+        val speedKmh = maxOf(navState.speedKmh, aiState.predictedSpeedKmh)
+        val isStationary = speedKmh < 0.5 && (
+            aiState.motionClassification.contains("Stationary", ignoreCase = true) ||
+            (navState.speedKmh < 0.3 && aiState.predictedSpeedKmh < 0.3)
+        )
+        val liveSpeed = if (isStationary) 0.0 else speedKmh
         val liveSpeedConf = when {
             isStationary -> 98
             aiState.speedConfidencePercentage > 0 -> aiState.speedConfidencePercentage
             navState.confidencePercentage > 0 -> navState.confidencePercentage
             else -> 90
         }
-        val liveMotion = if (aiState.motionClassification.isNotBlank() && aiState.motionClassification != "UNKNOWN")
-            aiState.motionClassification
-        else if (navState.speedKmh >= 4.0)
-            "Driving"
-        else
-            "Stationary"
+        val liveMotion = when {
+            speedKmh >= 3.0 -> if (aiState.motionClassification.isNotBlank() && !aiState.motionClassification.contains("Stationary", ignoreCase = true)) aiState.motionClassification else "Driving"
+            speedKmh >= 0.5 -> if (aiState.motionClassification.isNotBlank() && !aiState.motionClassification.contains("Stationary", ignoreCase = true)) aiState.motionClassification else "Moving"
+            else -> "Stationary"
+        }
         val liveMotionConf = if (aiState.motionConfidencePercentage > 0) aiState.motionConfidencePercentage else if (isStationary) 95 else 88
 
         AINeuralCoreHeroCard(
@@ -95,7 +99,7 @@ fun IntelligenceScreen(
         }
 
         // ── 4. Neural Model Selection & Capabilities ───────────────────────
-        NeuralModelComparisonCard()
+        NeuralModelComparisonCard(activeModelVersion = aiState.modelVersion)
 
         // ── 5. Road Impact & Pothole Detector Card ─────────────────────────
         RoadImpactDetectorCard(
@@ -122,6 +126,7 @@ fun IntelligenceScreen(
 @Composable
 private fun IntelligenceTopHeader(
     isModelLoaded: Boolean,
+    modelVersion: String = "",
     inferenceTimeMs: Long
 ) {
     Row(
@@ -169,6 +174,14 @@ private fun IntelligenceTopHeader(
         }
 
         // Live status pill
+        val activeBadgeLabel = when {
+            !isModelLoaded -> "Ready"
+            modelVersion.contains("IDR", ignoreCase = true) -> "IDR-V1 Active"
+            modelVersion.contains("PINO", ignoreCase = true) -> "PINO-DR Active"
+            modelVersion.isNotBlank() -> "AI Active"
+            else -> "Active"
+        }
+
         Surface(
             shape = RoundedCornerShape(20.dp),
             color = if (isModelLoaded) Color(0xFFECFDF5) else Color(0xFFF1F5F9),
@@ -189,7 +202,7 @@ private fun IntelligenceTopHeader(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (isModelLoaded) "PINO-DR Active" else "Ready",
+                    text = activeBadgeLabel,
                     color = if (isModelLoaded) Color(0xFF065F46) else Color(0xFF475569),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
@@ -568,7 +581,10 @@ private fun MotionClassificationCard(
 // 4. MODEL COMPARISON CARD
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
-private fun NeuralModelComparisonCard() {
+private fun NeuralModelComparisonCard(activeModelVersion: String = "") {
+    val isIdrActive = activeModelVersion.contains("IDR", ignoreCase = true)
+    val isPinoActive = !isIdrActive && (activeModelVersion.contains("PINO", ignoreCase = true) || activeModelVersion.isBlank())
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -606,11 +622,11 @@ private fun NeuralModelComparisonCard() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // PINO-DR card
+            // IDR-V1 card
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = Color(0xFFEFF6FF),
-                border = BorderStroke(1.5.dp, Color(0xFF3B82F6)),
+                color = if (isIdrActive) Color(0xFFEFF6FF) else Color(0xFFF8FAFC),
+                border = BorderStroke(if (isIdrActive) 1.5.dp else 1.dp, if (isIdrActive) Color(0xFF3B82F6) else Color(0xFFE2E8F0)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -621,32 +637,38 @@ private fun NeuralModelComparisonCard() {
                         modifier = Modifier
                             .size(36.dp)
                             .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0xFF2563EB)),
+                            .background(if (isIdrActive) Color(0xFF2563EB) else Color(0xFFE2E8F0)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Tune, contentDescription = null, tint = if (isIdrActive) Color.White else Color(0xFF64748B), modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("PINO-DR v3 Production", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = Color(0xFF0F172A))
-                        Text("Physics-Informed Neural Operator • ZUPT Gated", fontSize = 11.sp, color = Color(0xFF2563EB))
+                        Text("IDR-V1 Kinematic", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = if (isIdrActive) Color(0xFF0F172A) else Color(0xFF334155))
+                        Text("Kinematic Residual Network • Uncertainty Heads", fontSize = 11.sp, color = if (isIdrActive) Color(0xFF2563EB) else Color(0xFF64748B))
                     }
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFF2563EB)
+                        color = if (isIdrActive) Color(0xFF2563EB) else Color(0xFFF1F5F9)
                     ) {
-                        Text("ACTIVE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+                        Text(
+                            text = if (isIdrActive) "PRIMARY" else "STANDBY",
+                            color = if (isIdrActive) Color.White else Color(0xFF64748B),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // IDR-V1 card
+            // PINO-DR card
             Surface(
                 shape = RoundedCornerShape(14.dp),
-                color = Color(0xFFF8FAFC),
-                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                color = if (isPinoActive) Color(0xFFEFF6FF) else Color(0xFFF8FAFC),
+                border = BorderStroke(if (isPinoActive) 1.5.dp else 1.dp, if (isPinoActive) Color(0xFF3B82F6) else Color(0xFFE2E8F0)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -657,21 +679,27 @@ private fun NeuralModelComparisonCard() {
                         modifier = Modifier
                             .size(36.dp)
                             .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0xFFE2E8F0)),
+                            .background(if (isPinoActive) Color(0xFF2563EB) else Color(0xFFE2E8F0)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = if (isPinoActive) Color.White else Color(0xFF64748B), modifier = Modifier.size(20.dp))
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("IDR-V1 Kinematic", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = Color(0xFF334155))
-                        Text("Kinematic Residual Network • Uncertainty Heads", fontSize = 11.sp, color = Color(0xFF64748B))
+                        Text("PINO-DR v3 Production", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = if (isPinoActive) Color(0xFF0F172A) else Color(0xFF334155))
+                        Text("Physics-Informed Neural Operator • ZUPT Gated", fontSize = 11.sp, color = if (isPinoActive) Color(0xFF2563EB) else Color(0xFF64748B))
                     }
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFFF1F5F9)
+                        color = if (isPinoActive) Color(0xFF2563EB) else Color(0xFFF1F5F9)
                     ) {
-                        Text("STANDBY", color = Color(0xFF64748B), fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp))
+                        Text(
+                            text = if (isPinoActive) "ACTIVE" else "STANDBY",
+                            color = if (isPinoActive) Color.White else Color(0xFF64748B),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
                     }
                 }
             }

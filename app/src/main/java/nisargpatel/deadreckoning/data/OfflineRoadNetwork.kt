@@ -98,7 +98,7 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
         nearestOnSegment(point, segment)?.let { (projected, distance, bearing) ->
             RoadCandidate(segment.name, projected, distance, segment.wayId, bearing, segment.oneWay)
         }
-    }.sortedBy { it.distanceMeters }.take(8)
+    }.filter { it.distanceMeters <= 150.0 }.sortedBy { it.distanceMeters }.take(8)
 
     fun route(start: GeoPoint, end: GeoPoint): List<GeoPoint>? {
         if (segments.isEmpty()) return null
@@ -228,7 +228,7 @@ class OfflineRoadNetwork private constructor(private val context: Context) {
         val local = buildList {
             for (lat in latitudeCell - 1..latitudeCell + 1) for (lon in longitudeCell - 1..longitudeCell + 1) addAll(spatialIndex["$lat:$lon"].orEmpty())
         }.distinctBy { it.wayId }
-        return local.ifEmpty { segments }
+        return local
     }
 
     private fun cellId(point: GeoPoint): String = "${(point.latitude * 100).toInt()}:${(point.longitude * 100).toInt()}"

@@ -90,14 +90,23 @@ object OSRMRouteFetcher {
                             val distanceKm = Math.round((distanceMeters / 1000.0) * 10.0) / 10.0
                             val durationMins = max(1, Math.round(durationSeconds / 60.0).toInt())
 
-                            val geometry = rObj.getJSONObject("geometry")
-                            val coords = geometry.getJSONArray("coordinates")
                             val points = mutableListOf<GeoPoint>()
-                            for (i in 0 until coords.length()) {
-                                val pt = coords.getJSONArray(i)
-                                val lon = pt.getDouble(0)
-                                val lat = pt.getDouble(1)
-                                points.add(GeoPoint(lat, lon))
+                            val geomObj = rObj.optJSONObject("geometry")
+                            if (geomObj != null) {
+                                val coords = geomObj.optJSONArray("coordinates")
+                                if (coords != null) {
+                                    for (i in 0 until coords.length()) {
+                                        val pt = coords.getJSONArray(i)
+                                        val lon = pt.getDouble(0)
+                                        val lat = pt.getDouble(1)
+                                        points.add(GeoPoint(lat, lon))
+                                    }
+                                }
+                            } else {
+                                val polylineString = rObj.optString("geometry", "")
+                                if (polylineString.isNotBlank()) {
+                                    points.addAll(decodePolyline(polylineString))
+                                }
                             }
 
                             val title = if (rIdx == 0) "Fastest route" else "Alternative ${rIdx}"
@@ -293,5 +302,39 @@ object OSRMRouteFetcher {
             alternatives = alternatives,
             selectedAlternativeId = "primary"
         )
+    }
+
+    fun decodePolyline(encoded: String): List<GeoPoint> {
+        val poly = ArrayList<GeoPoint>()
+        var index = 0
+        val len = encoded.length
+        var lat = 0
+        var lng = 0
+
+        while (index < len) {
+            var b: Int
+            var shift = 0
+            var result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dlat = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lat += dlat
+
+            shift = 0
+            result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dlng = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lng += dlng
+
+            poly.add(GeoPoint(lat.toDouble() / 1E5, lng.toDouble() / 1E5))
+        }
+        return poly
     }
 }

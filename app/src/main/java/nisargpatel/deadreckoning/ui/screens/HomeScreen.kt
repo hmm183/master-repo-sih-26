@@ -680,10 +680,10 @@ private fun PlanRouteCard(
     longitude: Double,
     onPlanRouteClicked: () -> Unit
 ) {
-    val latStr = if (latitude != 0.0) String.format(Locale.US, "%.4f", latitude) else "16.5216"
-    val lonStr = if (longitude != 0.0) String.format(Locale.US, "%.4f", longitude) else "80.5217"
-    val targetLat = if (latitude != 0.0) latitude else 16.5216
-    val targetLon = if (longitude != 0.0) longitude else 80.5217
+    val latStr = if (latitude != 0.0) String.format(Locale.US, "%.4f", latitude) else "--"
+    val lonStr = if (longitude != 0.0) String.format(Locale.US, "%.4f", longitude) else "--"
+    val targetLat = if (latitude != 0.0) latitude else 20.5937
+    val targetLon = if (longitude != 0.0) longitude else 78.9629
 
     Surface(
         modifier = Modifier

@@ -212,6 +212,11 @@ class LocationAdapter(context: Context) {
             )
 
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+            fusedLocationClient.lastLocation.addOnSuccessListener { last ->
+                if (last != null && isGpsEnabled()) {
+                    handleLocation(last)
+                }
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 val callback = gnssStatusCallback ?: createGnssStatusCallback().also { gnssStatusCallback = it }
                 locationManager?.registerGnssStatusCallback(callback, null)

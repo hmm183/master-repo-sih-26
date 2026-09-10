@@ -107,10 +107,17 @@ class NavigationViewModel(
     fun selectDestination(name: String, destinationPoint: GeoPoint) {
         viewModelScope.launch(Dispatchers.IO) {
             val currentNav = navigationState.value
-            val sourcePoint = if (currentNav.latitude != 0.0 || currentNav.longitude != 0.0) {
-                GeoPoint(currentNav.latitude, currentNav.longitude)
-            } else {
-                GeoPoint(16.5216, 80.5216)
+            val currentGnss = gnssState.value
+            val sourcePoint = when {
+                currentNav.latitude != 0.0 && currentNav.longitude != 0.0 ->
+                    GeoPoint(currentNav.latitude, currentNav.longitude)
+                currentGnss.latitude != 0.0 && currentGnss.longitude != 0.0 ->
+                    GeoPoint(currentGnss.latitude, currentGnss.longitude)
+                else -> null
+            }
+            if (sourcePoint == null) {
+                android.util.Log.w("NavigationViewModel", "Cannot compute route: No GPS fix acquired yet.")
+                return@launch
             }
 
             // 1. Fetch real street road routing first (OSRM / OpenStreetMap online for Google Maps-grade route)

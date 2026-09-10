@@ -192,6 +192,25 @@ class LiveNavigationRepository(
                     anomalyDetected = "Warning: Low phone alignment (${alignment.confidencePercentage}%). Calibrate with a straight drive."
                 )
             }
+            if (!fusion.isInitialized()) {
+                val navPos = _navigationState.value
+                val gnssPos = _gnssState.value
+                if (navPos.latitude != 0.0 || navPos.longitude != 0.0) {
+                    fusion.reset(
+                        GeoPoint(navPos.latitude, navPos.longitude),
+                        navPos.speedKmh / 3.6,
+                        navPos.headingDegrees,
+                        navPos.accuracyMeters
+                    )
+                } else if (gnssPos.latitude != 0.0 || gnssPos.longitude != 0.0) {
+                    fusion.reset(
+                        GeoPoint(gnssPos.latitude, gnssPos.longitude),
+                        gnssPos.speedKmh / 3.6,
+                        gnssPos.bearingDegrees,
+                        gnssPos.accuracyMeters
+                    )
+                }
+            }
         }
     }
 
@@ -472,9 +491,9 @@ class LiveNavigationRepository(
     }
 
     private fun filterVehicleSpeed(rawSpeedKmh: Double, isStationaryHint: Boolean = false): Double {
-        // Automotive navigation deadband: speeds under 0.8 km/h or when stationary classification is reported
+        // Automotive navigation deadband: speeds under 0.3 km/h or when stationary classification is reported
         // are clamped to 0.0 km/h to prevent GPS Doppler/IMU noise jitter when parked or stationary.
-        if (isStationaryHint || rawSpeedKmh < 0.8) return 0.0
+        if (isStationaryHint || rawSpeedKmh < 0.3) return 0.0
         return rawSpeedKmh
     }
 
@@ -544,7 +563,7 @@ class LiveNavigationRepository(
             fused.position
         }
 
-        applyRouteMatch(effectivePosition, isDeadReckoning = false)
+        val match = applyRouteMatch(effectivePosition, isDeadReckoning = false)
         val gnssConfidence = navigationConfidence(fused, assessment.quality)
         val finalHeading = if (fused.headingDegrees != 0.0 && state.speedKmh >= 4.0) {
             fused.headingDegrees
@@ -553,8 +572,28 @@ class LiveNavigationRepository(
         } else {
             fused.headingDegrees
         }
-        val isStationary = state.speedKmh < 0.5 && _aiState.value.motionClassification.equals("Stationary", ignoreCase = true)
+        val gnssMoving = state.speedKmh >= 1.0
+        if (gnssMoving) {
+            sensorAdapter.externalStationaryHint = false
+        }
+        val isStationary = !gnssMoving && state.speedKmh < 0.5 && _sensorState.value.isStationary
         val filteredSpeed = filterVehicleSpeed(fused.speedMps * 3.6, isStationary)
+
+        // Road snap: when GPS fix matches a known road/route with good confidence, snap display position
+        val displayPos = if (match != null && match.distanceMeters <= 25.0 && match.confidence >= 40) {
+            match.point
+        } else {
+            effectivePosition
+        }
+
+        val prevPos = if (_navigationState.value.latitude != 0.0 && _navigationState.value.longitude != 0.0) {
+            GeoPoint(_navigationState.value.latitude, _navigationState.value.longitude)
+        } else null
+        val deltaDistanceKm = if (prevPos != null) {
+            val d = prevPos.distanceToAsDouble(displayPos)
+            if (d in 0.5..150.0) d / 1000.0 else 0.0
+        } else 0.0
+
         _navigationState.value = _navigationState.value.copy(
             mode = if (assessment.quality == GnssQuality.RECOVERING) {
                 NavigationMode.GNSS_RECOVERY
@@ -564,18 +603,19 @@ class LiveNavigationRepository(
             speedKmh = filteredSpeed,
             headingDegrees = finalHeading,
             accuracyMeters = fused.horizontalUncertaintyMeters,
-            latitude = effectivePosition.latitude,
-            longitude = effectivePosition.longitude,
+            latitude = displayPos.latitude,
+            longitude = displayPos.longitude,
             confidencePercentage = gnssConfidence,
             alongTrackUncertaintyMeters = fused.alongTrackUncertaintyMeters,
             crossTrackUncertaintyMeters = fused.crossTrackUncertaintyMeters,
             speedUncertaintyKmh = fused.speedUncertaintyMps * 3.6,
             headingUncertaintyDegrees = fused.headingUncertaintyDegrees,
-            outageDurationSeconds = 0
+            outageDurationSeconds = 0,
+            totalDistanceKm = _navigationState.value.totalDistanceKm + deltaDistanceKm
         )
         _aiState.value = _aiState.value.copy(isActive = false)
         _mapState.value = _mapState.value.copy(
-            currentPosition = effectivePosition,
+            currentPosition = displayPos,
             gnssTrajectory = (_mapState.value.gnssTrajectory + effectivePosition).takeLast(200)
         )
         updateAnalytics()
@@ -669,10 +709,16 @@ class LiveNavigationRepository(
         }
         val seedSpeed = if (hasFreshGnss()) {
             _gnssState.value.speedKmh / 3.6
-        } else if (_sensorState.value.isStationary || _navigationState.value.speedKmh < 0.5) {
+        } else if (_sensorState.value.isStationary) {
             0.0
-        } else {
+        } else if (_aiState.value.predictedSpeedKmh > 0.3) {
             _aiState.value.predictedSpeedKmh / 3.6
+        } else if (_navigationState.value.speedKmh > 0.3) {
+            _navigationState.value.speedKmh / 3.6
+        } else if (_gnssState.value.speedKmh > 0.5) {
+            _gnssState.value.speedKmh / 3.6
+        } else {
+            0.0
         }
 
         if (idrModel != null) {
@@ -685,7 +731,7 @@ class LiveNavigationRepository(
             val aFwd: Float
             val wYaw: Float
             val aLat: Float
-            if (state.isStationary || (!hasFreshGnss() && _navigationState.value.speedKmh < 0.3 && _aiState.value.predictedSpeedKmh < 0.5)) {
+            if (state.isStationary) {
                 aFwd = 0.0f
                 wYaw = 0.0f
                 aLat = 0.0f
@@ -730,10 +776,12 @@ class LiveNavigationRepository(
     private fun applyPinoPrediction(prediction: PinoPrediction) {
         val rawSpeedKmh = prediction.speedKmh.toDouble()
         val isHardwareStationary = _sensorState.value.isStationary
-        val isStationary = isHardwareStationary ||
-            prediction.isStationary ||
-            rawSpeedKmh < 0.8 ||
-            (!hasFreshGnss() && _navigationState.value.speedKmh < 0.5 && rawSpeedKmh < 2.0)
+        val gnssMoving = hasFreshGnss() && _gnssState.value.speedKmh >= 1.0
+        val isStationary = if (gnssMoving) {
+            false
+        } else {
+            isHardwareStationary && (prediction.isStationary || rawSpeedKmh < 0.5)
+        }
         sensorAdapter.externalStationaryHint = isStationary
 
         val speedKmh = if (isStationary) 0.0 else filterVehicleSpeed(rawSpeedKmh, isStationary)
@@ -860,10 +908,12 @@ class LiveNavigationRepository(
     private fun applyIdrPrediction(prediction: IdrPrediction) {
         val rawSpeedKmh = prediction.speedMps * 3.6
         val isHardwareStationary = _sensorState.value.isStationary
-        val isStationary = isHardwareStationary ||
-            prediction.motionClass == MotionClass.STATIONARY ||
-            rawSpeedKmh < 1.5 ||
-            (!hasFreshGnss() && _navigationState.value.speedKmh < 0.5 && rawSpeedKmh < 3.0)
+        val gnssMoving = hasFreshGnss() && _gnssState.value.speedKmh >= 1.0
+        val isStationary = if (gnssMoving) {
+            false
+        } else {
+            isHardwareStationary && (prediction.motionClass == MotionClass.STATIONARY || rawSpeedKmh < 0.5)
+        }
         sensorAdapter.externalStationaryHint = isStationary
 
         val speedKmh = filterVehicleSpeed(rawSpeedKmh, isStationary)
@@ -981,7 +1031,14 @@ class LiveNavigationRepository(
         // motion-class softmax. A relative sigma of 10% of current speed reads as high
         // confidence; comparable to the speed itself reads as none.
         val rawSpeedKmh = prediction.speedMps * 3.6
-        val isStationary = prediction.motionClass == MotionClass.STATIONARY || rawSpeedKmh < 0.8
+        val isHardwareStationary = _sensorState.value.isStationary
+        val gnssMoving = hasFreshGnss() && _gnssState.value.speedKmh >= 1.0
+        val isStationary = if (gnssMoving) {
+            false
+        } else {
+            isHardwareStationary && (prediction.motionClass == MotionClass.STATIONARY || rawSpeedKmh < 0.5)
+        }
+        sensorAdapter.externalStationaryHint = isStationary
         val speedKmh = filterVehicleSpeed(rawSpeedKmh, isStationary)
         val speedSigmaKmh = prediction.speedUncertaintyMps * 3.6
         val speedConfidence = if (speedSigmaKmh <= 0.0) {
@@ -1095,14 +1152,15 @@ class LiveNavigationRepository(
                 bearingDegrees = it.candidate.bearingDegrees
             )
         }
-        val match = if (routeMatch != null && (routeMatch.distanceMeters <= 35.0 || roadCandidates.isEmpty())) {
-            routeMatch
-        } else {
-            hmmRouteMatch ?: routeMatch ?: roadCandidates.firstOrNull()?.let {
+        val match = when {
+            routeMatch != null && routeMatch.distanceMeters <= 60.0 -> routeMatch
+            hmmRouteMatch != null && hmmRouteMatch.distanceMeters <= 50.0 -> hmmRouteMatch
+            routeMatch != null -> routeMatch
+            else -> roadCandidates.firstOrNull { it.distanceMeters <= 50.0 }?.let {
                 RouteMatch(
                     point = it.point,
                     distanceMeters = it.distanceMeters,
-                    confidence = (100.0 - it.distanceMeters * 4.0).toInt().coerceIn(0, 100),
+                    confidence = (100.0 - it.distanceMeters * 2.0).toInt().coerceIn(0, 100),
                     bearingDegrees = it.bearingDegrees
                 )
             }
@@ -1212,13 +1270,7 @@ class LiveNavigationRepository(
         val startTime = if (sessionStartedAtMs != 0L) sessionStartedAtMs else now - 45_000L
         if (outageStartedAtMs != 0L) totalOutageMs += now - outageStartedAtMs
         val durationSeconds = ((now - startTime) / 1_000L).coerceAtLeast(15L)
-        val distance = if (_navigationState.value.totalDistanceKm > 0.02) {
-            _navigationState.value.totalDistanceKm
-        } else if (_activeRouteInfo.value.totalDistanceKm > 0.05) {
-            _activeRouteInfo.value.totalDistanceKm
-        } else {
-            1.2
-        }
+        val distance = _navigationState.value.totalDistanceKm
         val session = NavigationSession(
             id = startTime.toString(),
             dateString = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(startTime)),
@@ -1226,8 +1278,8 @@ class LiveNavigationRepository(
             distanceKm = distance,
             outageCount = outageCount,
             drDurationSeconds = totalOutageMs / 1_000L,
-            maxErrorMeters = if (maxDriftMeters > 0.0) maxDriftMeters else 1.6,
-            avgErrorMeters = if (driftSamples > 0) accumulatedDriftMeters / driftSamples else 0.8,
+            maxErrorMeters = maxDriftMeters,
+            avgErrorMeters = if (driftSamples > 0) accumulatedDriftMeters / driftSamples else 0.0,
             status = "Completed"
         )
         _sessionState.value = SessionState(sessions = (listOf(session) + _sessionState.value.sessions).take(25))

@@ -140,6 +140,7 @@ fun LiveNavigationScreen(
     val gnssState by viewModel.gnssState.collectAsState()
     val sensorState by viewModel.sensorState.collectAsState()
     val routeInfo by viewModel.selectedRoute.collectAsState()
+    val mapMatchingState by viewModel.mapMatchingState.collectAsState()
     var potholeAlert by remember { mutableStateOf<String?>(null) }
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
     var showSearchModal by remember { mutableStateOf(false) }
@@ -229,7 +230,12 @@ fun LiveNavigationScreen(
                 offRouteTicks++
                 if ((offRouteTicks >= 2 || dist > immediateThreshold) && !isRerouting) {
                     Log.i(TAG, "Confirmed GPS off-route deviation (${String.format("%.1f", dist)}m > threshold ${String.format("%.1f", if (dist > immediateThreshold) immediateThreshold else baseThreshold)}m). Recalculating route.")
-                    viewModel.recalculateRoute(currentVehiclePos, routeInfo.destinationPoint!!, routeInfo.destinationName)
+                    val rerouteStartPos = if (mapMatchingState.matchedPositionLat != 0.0 && mapMatchingState.distanceFromRoadMeters <= 40.0) {
+                        GeoPoint(mapMatchingState.matchedPositionLat, mapMatchingState.matchedPositionLon)
+                    } else {
+                        currentVehiclePos
+                    }
+                    viewModel.recalculateRoute(rerouteStartPos, routeInfo.destinationPoint!!, routeInfo.destinationName)
                     offRouteTicks = 0
                 }
             } else {
@@ -392,10 +398,16 @@ fun LiveNavigationScreen(
 
                 // Vehicle marker position update (does NOT move map camera)
                 if (navState.latitude != 0.0 || navState.longitude != 0.0) {
-                    val currentPos = GeoPoint(navState.latitude, navState.longitude)
+                    val markerPos = if (mapMatchingState.matchedPositionLat != 0.0 &&
+                        mapMatchingState.distanceFromRoadMeters <= 25.0 &&
+                        mapMatchingState.matchConfidencePercentage >= 40) {
+                        GeoPoint(mapMatchingState.matchedPositionLat, mapMatchingState.matchedPositionLon)
+                    } else {
+                        GeoPoint(navState.latitude, navState.longitude)
+                    }
                     UberVehicleMarker.updateVehicleMarker(
                         mapView = mapView,
-                        position = currentPos,
+                        position = markerPos,
                         headingDegrees = roadAlignedHeading
                     )
                 }
@@ -622,8 +634,10 @@ fun LiveNavigationScreen(
                                 Color(0xFF64748B),
                             modifier = Modifier.weight(1f)
                         )
-                        val latStr = if (navState.latitude != 0.0) String.format("%.2f", navState.latitude) else "16.52"
-                        val lngStr = if (navState.longitude != 0.0) String.format("%.2f", navState.longitude) else "80.52"
+                        val effLat = if (navState.latitude != 0.0) navState.latitude else gnssState.latitude
+                        val effLng = if (navState.longitude != 0.0) navState.longitude else gnssState.longitude
+                        val latStr = if (effLat != 0.0) String.format("%.4f", effLat) else "--"
+                        val lngStr = if (effLng != 0.0) String.format("%.4f", effLng) else "--"
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = Color(0xFFEFF6FF)
@@ -1285,34 +1299,40 @@ fun LiveNavigationScreen(
     if (showSearchModal) {
         DestinationSearchModal(
             navState = navState,
+            gnssState = gnssState,
             onDismiss = { showSearchModal = false },
             onSelect = { name, geoPoint ->
                 viewModel.selectDestination(name, geoPoint)
                 showSearchModal = false
                 mapViewRef?.let { map ->
-                    val curLat = if (navState.latitude != 0.0) navState.latitude else 16.5216
-                    val curLon = if (navState.longitude != 0.0) navState.longitude else 80.5216
-                    val userPoint = GeoPoint(curLat, curLon)
+                    val curLat = if (navState.latitude != 0.0) navState.latitude else gnssState.latitude
+                    val curLon = if (navState.longitude != 0.0) navState.longitude else gnssState.longitude
+                    if (curLat != 0.0 || curLon != 0.0) {
+                        val userPoint = GeoPoint(curLat, curLon)
 
-                    val maxLat = maxOf(userPoint.latitude, geoPoint.latitude)
-                    val minLat = minOf(userPoint.latitude, geoPoint.latitude)
-                    val maxLon = maxOf(userPoint.longitude, geoPoint.longitude)
-                    val minLon = minOf(userPoint.longitude, geoPoint.longitude)
-                    val padLat = maxOf(0.005, (maxLat - minLat) * 0.3)
-                    val padLon = maxOf(0.005, (maxLon - minLon) * 0.3)
-                    val bBox = BoundingBox(maxLat + padLat, maxLon + padLon, minLat - padLat, minLon - padLon)
+                        val maxLat = maxOf(userPoint.latitude, geoPoint.latitude)
+                        val minLat = minOf(userPoint.latitude, geoPoint.latitude)
+                        val maxLon = maxOf(userPoint.longitude, geoPoint.longitude)
+                        val minLon = minOf(userPoint.longitude, geoPoint.longitude)
+                        val padLat = maxOf(0.005, (maxLat - minLat) * 0.3)
+                        val padLon = maxOf(0.005, (maxLon - minLon) * 0.3)
+                        val bBox = BoundingBox(maxLat + padLat, maxLon + padLon, minLat - padLat, minLon - padLon)
 
-                    val distKm = userPoint.distanceToAsDouble(geoPoint) / 1000.0
-                    if (distKm <= 80.0) {
-                        try {
-                            map.zoomToBoundingBox(bBox, true, 80)
-                        } catch (e: Exception) {
+                        val distKm = userPoint.distanceToAsDouble(geoPoint) / 1000.0
+                        if (distKm <= 80.0) {
+                            try {
+                                map.zoomToBoundingBox(bBox, true, 80)
+                            } catch (e: Exception) {
+                                map.controller.animateTo(userPoint)
+                                map.controller.setZoom(16.5)
+                            }
+                        } else {
                             map.controller.animateTo(userPoint)
                             map.controller.setZoom(16.5)
                         }
                     } else {
-                        map.controller.animateTo(userPoint)
-                        map.controller.setZoom(16.5)
+                        map.controller.animateTo(geoPoint)
+                        map.controller.setZoom(15.0)
                     }
                 }
                 Toast.makeText(context, "Navigating to $name", Toast.LENGTH_SHORT).show()
@@ -1371,6 +1391,7 @@ private fun getCardinalShort(deg: Int): String {
 @Composable
 private fun DestinationSearchModal(
     navState: nisargpatel.deadreckoning.domain.state.NavigationState,
+    gnssState: nisargpatel.deadreckoning.domain.state.GNSSState,
     onDismiss: () -> Unit,
     onSelect: (String, GeoPoint) -> Unit
 ) {
@@ -1386,8 +1407,8 @@ private fun DestinationSearchModal(
     val longitude = coordinateParts.getOrNull(1)?.toDoubleOrNull()
     val hasValidCoord = latitude != null && longitude != null && latitude in -90.0..90.0 && longitude in -180.0..180.0
 
-    val currentLat = if (navState.latitude != 0.0) navState.latitude else 16.5216
-    val currentLon = if (navState.longitude != 0.0) navState.longitude else 80.5216
+    val currentLat = if (navState.latitude != 0.0) navState.latitude else gnssState.latitude
+    val currentLon = if (navState.longitude != 0.0) navState.longitude else gnssState.longitude
 
     // Debounced search when user types destination
     LaunchedEffect(destinationName) {
@@ -1406,9 +1427,9 @@ private fun DestinationSearchModal(
 
     val quickPresets = listOf(
         "Airport",
-        "Benz Circle",
         "Railway Station",
-        "City Center"
+        "City Center",
+        "Hospital"
     )
 
     ModalBottomSheet(
@@ -1481,7 +1502,7 @@ private fun DestinationSearchModal(
                 value = destinationName,
                 onValueChange = { destinationName = it },
                 label = { Text("Search address, place, or city") },
-                placeholder = { Text("e.g. Vijayawada Airport, Benz Circle", color = Color(0xFF94A3B8)) },
+                placeholder = { Text("e.g. Airport, Central Station", color = Color(0xFF94A3B8)) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF2563EB)) },
                 trailingIcon = {
                     if (destinationName.isNotBlank()) {

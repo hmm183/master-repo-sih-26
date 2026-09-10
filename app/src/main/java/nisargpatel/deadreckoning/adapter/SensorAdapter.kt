@@ -85,9 +85,15 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
     /** Callback invoked when ZUPT / stationary periods produce a newly re-zeroed gyro bias. */
     var onGyroBiasPersisted: ((FloatArray) -> Unit)? = null
 
+    private var lastBiasPersistMs = 0L
+
     init {
         biasEstimator.onBiasUpdated = { bias ->
-            onGyroBiasPersisted?.invoke(bias)
+            val now = System.currentTimeMillis()
+            if (now - lastBiasPersistMs >= 3000L) {
+                lastBiasPersistMs = now
+                onGyroBiasPersisted?.invoke(bias)
+            }
         }
     }
 
@@ -134,9 +140,11 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
         // Realistic cross-device phone gravity tolerance (9.81 +/- 0.45 m/s^2)
         val stableGravity = abs(magnitude - 9.81f) < 0.45f
 
-        // Instantaneous candidate check debounced via hysteresis filter
+        // Instantaneous candidate check debounced via hysteresis filter:
+        // Must have stable gravity AND quiet gyro to be candidate stationary.
+        // externalStationaryHint is only considered if gravity is physically stable.
         val gyroNorm = gyroMagnitude(_sensorState.value)
-        val isCandidateStationary = (stableGravity && gyroNorm < 0.12f) || externalStationaryHint
+        val isCandidateStationary = stableGravity && (gyroNorm < 0.18f || (externalStationaryHint && gyroNorm < 0.25f))
         val newStationary = debounceFilter.update(isCandidateStationary)
 
         if (newStationary && stationarySinceNs == 0L) stationarySinceNs = event.timestamp
@@ -228,7 +236,7 @@ class SensorAdapter(context: Context) : SensorEventListener, ImuSourceAdapter {
  * vehicle motion state.
  */
 class StationaryDebounceFilter(
-    val enterThreshold: Int = 15, // ~300 ms at 50 Hz
+    val enterThreshold: Int = 8, // ~160 ms at 50 Hz
     val exitThreshold: Int = 5    // ~100 ms at 50 Hz
 ) {
     var stableCount = 0
@@ -303,7 +311,7 @@ class GyroBiasEstimator(
         if (isBootstrapping) {
             bootstrapSampleCount++
             updateBias(rawGyro)
-        } else if (isStationary || externalStationaryHint) {
+        } else if (isStationary || (externalStationaryHint && stableGravity)) {
             updateBias(rawGyro)
         }
 
