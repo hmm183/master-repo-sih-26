@@ -92,7 +92,7 @@ class LiveNavigationRepository(
      * Primary on-device dead reckoning model: IDR-V1 (Trained Heteroscedastic Uncertainty).
      * Outperforms PINO by 3-4x in blackout error (14.4m vs 84.5m @ 10s; 92.9m vs 536.6m @ 30s)
      * and outputs dynamic per-step uncertainty for the fusion filter.
-     * PINO-DR v3 and V8 are kept as fallbacks.
+     * PINO-DR v7 Supreme MoE and V8 are kept as fallbacks.
      */
     private val idrModel = runCatching { IdrMotionEngine(context) }
         .onSuccess { Log.i("LiveNavigation", "Loaded IDR-V1 primary motion engine") }
@@ -100,8 +100,8 @@ class LiveNavigationRepository(
         .getOrNull()
     private val pinoModel = if (idrModel == null) {
         runCatching { PinoDrMotionEngine(context) }
-            .onSuccess { Log.i("LiveNavigation", "Loaded PINO-DR v3 ONNX fallback model") }
-            .onFailure { Log.w("LiveNavigation", "PINO-DR v3 unavailable, falling back to V8", it) }
+            .onSuccess { Log.i("LiveNavigation", "Loaded PINO-DR v7 Supreme MoE fallback model") }
+            .onFailure { Log.w("LiveNavigation", "PINO-DR v7 unavailable, falling back to V8", it) }
             .getOrNull()
     } else {
         null
@@ -788,7 +788,7 @@ class LiveNavigationRepository(
         val speedConfidence = if (isStationary) 98 else ((1.0f - prediction.zuptProbability).coerceIn(0.5f, 0.99f) * 100).toInt()
 
         val currentModelVer = pinoModel?.manifest?.deployment_status
-            ?: _aiState.value.modelVersion.ifBlank { "PINO-DR v3 Production" }
+            ?: _aiState.value.modelVersion.ifBlank { "PINO-DR v7 Supreme MoE" }
 
         _aiState.value = _aiState.value.copy(
             isActive = !hasFreshGnss(),
@@ -796,14 +796,16 @@ class LiveNavigationRepository(
             modelVersion = currentModelVer,
             predictedSpeedKmh = speedKmh,
             speedConfidencePercentage = speedConfidence,
-            motionClassification = if (isStationary) "Stationary (ZUPT)" else "${fusion.dominantMotionMode} (Hybrid)",
+            motionClassification = if (isStationary) "Stationary (ZUPT)" else if (prediction.dominantExpert.isNotBlank()) "${prediction.dominantExpert} (MoE)" else "${fusion.dominantMotionMode} (Hybrid)",
             motionConfidencePercentage = if (isStationary) 98 else ((1.0f - prediction.zuptProbability) * 100).toInt().coerceIn(75, 99),
             inferenceTimeMs = prediction.inferenceTimeMs,
             speedUncertaintyKmh = if (isStationary) 0.05 else 0.5,
             forwardUncertaintyMeters = if (isStationary) 0.05 else 0.3,
             lateralUncertaintyMeters = if (isStationary) 0.05 else 0.2,
             headingUncertaintyDegrees = if (isStationary) 0.1 else 0.8,
-            // PINO-DR v3 emits one prediction per second on the corrected 1 Hz bin
+            dominantExpert = prediction.dominantExpert,
+            expertWeights = prediction.routerWeights.toList(),
+            // PINO-DR v7 emits one prediction per second on the 1 Hz bin
             // schedule; between predictions the fusion EKF propagates heading with gyro
             // and coasts speed on the last estimate.
             predictionHz = (pinoModel?.predictionHz ?: prediction.stepIntervalSeconds

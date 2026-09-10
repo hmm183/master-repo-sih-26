@@ -153,4 +153,37 @@ class PinoPreprocessingContractTest {
             )
         }
     }
+
+    @Test
+    fun `v7 manifest declares pino-v7-moe preprocessing version and matches runtime spec`() {
+        val json = locateAsset("src/main/assets/ml/v7_pino_manifest.json").readText()
+        val manifest = Gson().fromJson(json, RawManifest::class.java)
+
+        val version = manifest.preprocessing_version
+        assertNotNull("PINO v7 manifest is missing 'preprocessing_version'", version)
+        assertEquals(
+            "PINO v7 manifest preprocessing_version does not match runtime spec",
+            PreprocessingSpec.PINO_V7.version,
+            version
+        )
+    }
+
+    @Test
+    fun `v7 manifest windowing fields agree with runtime constants`() {
+        val manifest = Gson().fromJson(
+            locateAsset("src/main/assets/ml/v7_pino_manifest.json").readText(),
+            RawManifest::class.java
+        )
+        val spec = PreprocessingSpec.PINO_V7
+
+        assertEquals(spec.windowSamples, manifest.window_size)
+        assertEquals(
+            PreprocessingSpec.PINO_V7_RAW_SAMPLE_RATE_HZ.toDouble(),
+            manifest.raw_sample_rate_hz!!,
+            1e-6
+        )
+        val binRate = manifest.bin_sample_rate_hz ?: manifest.bin_seconds?.let { 1.0 / it }
+        assertEquals(spec.sampleRateHz.toDouble(), binRate!!, 1e-6)
+        assertEquals(spec.predictionHz, manifest.prediction_hz!!, 1e-6)
+    }
 }

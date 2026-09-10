@@ -14,7 +14,8 @@ import kotlin.math.max
 import nisargpatel.deadreckoning.core.spec.PreprocessingSpec
 
 /**
- * One PINO-DR v3 inference. Represents motion over the last one-second bin.
+ * One PINO-DR v7 inference. Represents motion over the last one-second bin with
+ * Mixture-of-Experts routing weights.
  *
  * `stepIntervalSeconds` is exposed alongside the derived per-step distances so the
  * fusion layer never has to guess. Every consumer of a [PinoPrediction] must integrate
@@ -31,21 +32,23 @@ data class PinoPrediction(
     val stepLateralMeters: Float,
     val stepHeadingDeltaRadians: Float,
     val stepIntervalSeconds: Float,
-    val inferenceTimeMs: Long
+    val inferenceTimeMs: Long,
+    val routerWeights: FloatArray = FloatArray(5),
+    val dominantExpert: String = ""
 )
 
 /**
- * Deployment metadata for the packaged PINO-DR v3 artifact.
+ * Deployment metadata for the packaged PINO-DR v7 artifact.
  *
- * `preprocessing_version` is asserted against [PreprocessingSpec.PINO_V3.version] at
+ * `preprocessing_version` is asserted against [PreprocessingSpec.PINO_V7.version] at
  * engine load, so a training pipeline that produces a differently-preprocessed model
  * cannot be shipped silently. `raw_sample_rate_hz`, `bin_seconds` and `window_size` are
  * asserted against the runtime constants for the same reason.
  */
 data class PinoManifest(
-    val model: String = "PINO-DR v3",
-    val architecture: String = "Conv1D-BiGRU-TemporalAttention",
-    val deployment_status: String = "PINO-DR v3 Production",
+    val model: String = "PINO-DR v7 Supreme MoE",
+    val architecture: String = "5-Expert Mixture-of-Experts with Kinematic Router",
+    val deployment_status: String = "PINO-DR v7 Supreme MoE",
     val preprocessing_version: String = "",
     val parameters: Int = 0,
     val raw_sample_rate_hz: Double = 0.0,
@@ -55,54 +58,40 @@ data class PinoManifest(
     val window_seconds: Double = 0.0,
     val prediction_hz: Double = 0.0,
     val zupt_threshold: Float = 0.70f,
-    val sha256: String = ""
+    val sha256: String = "",
+    val channels: List<String> = emptyList(),
+    val experts: List<String> = emptyList()
 )
 
 /**
- * Runs the PINO-DR v3 model on-device.
+ * Runs the PINO-DR v7 Supreme 5-Expert Mixture-of-Experts (MoE) model on-device.
  *
- * ## Windowing contract, and the mismatch this class is fixing
+ * ## 6-Channel Windowing Contract
  *
- * PINO-DR v3 was trained on IO-VNBD sequences downsampled from 10 Hz to 1 Hz by taking
- * the mean of every 10 raw samples. Every one of the model's ten timesteps is therefore
- * a *one-second average*, the full input tensor spans *ten seconds* of history, and the
- * model emits *one prediction per second*.
+ * Channels:
+ *  0: a_fwd (m/s^2) - Vehicle forward acceleration
+ *  1: w_yaw (rad/s) - Vehicle yaw rate about Down axis
+ *  2: a_lat (m/s^2) - Vehicle lateral acceleration
+ *  3: v_prev (m/s)  - Velocity feedback / previous speed
+ *  4: yaw_accel (rad/s^2) - 10 Hz Savitzky-Golay numerical derivative (order 2, deriv 1, dt=0.1s)
+ *  5: a_cent_residual (m/s^2) - Centripetal residual: a_lat - v_prev * w_yaw
  *
- * The previous implementation of this class pushed raw ~10 Hz IMU samples straight into
- * a 10-slot buffer and predicted every 2 samples. That collapsed the input window from
- * 10 seconds of smoothed data to 1 second of raw pothole-and-engine-vibration noise, and
- * the model was being handed an input distribution it had never seen. On-device drift
- * numbers therefore said almost nothing about the reported benchmark.
- *
- * The corrected pipeline is:
- *
+ * The pipeline:
  *  1. Enforce ~10 Hz decimation on the incoming sensor stream.
- *  2. Accumulate 10 raw samples into a bin. When full, mean-reduce to a single
- *     four-channel vector representing that one second of motion.
- *  3. Push the reduced bin into a rolling deque of at most 10 bins.
- *  4. Once the deque is full (10 seconds of history) emit a prediction. Every subsequent
- *     bin advance produces one more prediction, at 1 Hz.
- *
- * Between the 1 Hz predictions, callers should propagate heading with gyro through the
- * fusion EKF (that path already exists in [nisargpatel.deadreckoning.data.LiveNavigationRepository]),
- * and coast speed on the model's last estimate.
- *
- * ## Contract check
- *
- * The manifest carries a `preprocessing_version` string. The engine refuses to load if
- * that string does not match [PreprocessingSpec.PINO_V3.version]. This mirrors the guard
- * already present in [IdrMotionEngine] and is exactly the check that would have caught
- * the windowing regression the moment it shipped.
+ *  2. Calculate 10 Hz yaw_accel via 5-point Savitzky-Golay filter and centripetal residual.
+ *  3. Accumulate 10 raw samples into a 6-channel bin (1 full second). Mean-reduce to 1 timestep.
+ *  4. Push reduced bin into a 10-bin rolling deque (10 seconds of history).
+ *  5. Emit predictions at 1 Hz with [disp_pred, ori_pred, zupt_logits, router_weights].
  */
 class PinoDrMotionEngine(
     context: Context,
-    private val spec: PreprocessingSpec = PreprocessingSpec.PINO_V3
+    private val spec: PreprocessingSpec = PreprocessingSpec.PINO_V7
 ) : AutoCloseable {
 
     companion object {
         private const val TAG = "PinoDrEngine"
-        private const val MODEL_ASSET = "ml/v3_pino_dr.onnx"
-        private const val MANIFEST_ASSET = "ml/v3_pino_manifest.json"
+        private const val MODEL_ASSET = "ml/v7_supreme_moe.onnx"
+        private const val MANIFEST_ASSET = "ml/v7_pino_manifest.json"
 
         // Physical clamps applied to every raw sample before averaging. Matches the
         // training pipeline's clamping bounds.
@@ -113,14 +102,18 @@ class PinoDrMotionEngine(
         private const val CLIP_V_PREV_MIN = 0.0f
         private const val CLIP_V_PREV_MAX = 45.0f
 
+        private const val CLIP_YAW_ACCEL_MIN = -2.0f
+        private const val CLIP_YAW_ACCEL_MAX = 2.0f
+        private const val CLIP_CENTRIPETAL_MIN = -8.0f
+        private const val CLIP_CENTRIPETAL_MAX = 8.0f
+
         // Output clamps.
         private const val CLIP_DISP_MIN = 0.0f
         private const val CLIP_DISP_MAX = 45.0f
         private const val CLIP_YAW_MIN = -1.2f
         private const val CLIP_YAW_MAX = 1.2f
 
-        // MinMax scaler constants baked from scalers_v3.pkl. Identical every timestep, so
-        // one entry per channel is enough. See v3_pino_scalers.json for the full array.
+        // MinMax scaler constants baked from scalers_v7.pkl.
         private const val S_A_FWD_SCALE = 0.076441556f
         private const val S_A_FWD_MIN = 0.52882564f
 
@@ -132,6 +125,12 @@ class PinoDrMotionEngine(
 
         private const val S_V_PREV_SCALE = 0.022222223f // 1.0 / 45.0
         private const val S_V_PREV_MIN = 0.0f
+
+        private const val S_YAW_ACCEL_SCALE = 0.25f
+        private const val S_YAW_ACCEL_MIN = 0.5f
+
+        private const val S_CENTRIPETAL_SCALE = 0.0625f
+        private const val S_CENTRIPETAL_MIN = 0.5f
 
         private const val S_Y_DISP_SCALE = 0.022222223f
         private const val S_Y_ORI_SCALE = 0.49350372f
@@ -146,6 +145,14 @@ class PinoDrMotionEngine(
 
         /** Below this reported speed, the ZUPT gate zeroes out the model's leftover drift. */
         private const val MIN_MOVING_SPEED_MPS = 0.4f
+
+        val EXPERT_NAMES = listOf(
+            "Motorway Cruising",
+            "Roundabout",
+            "Quick Accel",
+            "Hard Brake",
+            "Sharp Turns"
+        )
     }
 
     /** Model-facing rate: predictions are emitted at this Hz. */
@@ -156,14 +163,14 @@ class PinoDrMotionEngine(
 
     /** Raw sensor samples per bin. Ten at 10 Hz becomes one 1 Hz averaged bin. */
     private val rawSamplesPerBin: Int =
-        PreprocessingSpec.PINO_V3_RAW_SAMPLE_RATE_HZ / spec.sampleRateHz
+        PreprocessingSpec.PINO_V7_RAW_SAMPLE_RATE_HZ / spec.sampleRateHz
 
     private val windowSize: Int = spec.windowSamples
     private val channelCount: Int = spec.channelCount
 
     /** Minimum wall clock between accepted raw samples, in nanoseconds. */
     private val rawSampleIntervalNs: Long =
-        1_000_000_000L / PreprocessingSpec.PINO_V3_RAW_SAMPLE_RATE_HZ
+        1_000_000_000L / PreprocessingSpec.PINO_V7_RAW_SAMPLE_RATE_HZ
 
     /** Slack applied to the raw-sample gate to tolerate a slightly early sensor callback. */
     private val rawSampleGuardNs: Long = (rawSampleIntervalNs * 4) / 5
@@ -172,9 +179,13 @@ class PinoDrMotionEngine(
     private val session: OrtSession
     val manifest: PinoManifest
 
-    /** Accumulator for the current one-second bin. Cleared when the bin is emitted. */
-    private val binAccumulator = FloatArray(4)
+    /** Accumulator for the current one-second bin (6 channels). */
+    private val binAccumulator = FloatArray(6)
     private var samplesInCurrentBin: Int = 0
+
+    /** Ring buffer of last 5 yaw samples for 10 Hz Savitzky-Golay differentiation. */
+    private val yawRingBuffer = FloatArray(5)
+    private var yawSampleCount: Int = 0
 
     /** Rolling deque of the last [windowSize] one-second bins. */
     private val window = ArrayDeque<FloatArray>(windowSize)
@@ -187,11 +198,11 @@ class PinoDrMotionEngine(
     private var zuptLowCount: Int = 0
 
     init {
-        require(spec.channelCount == 4) {
-            "PINO-DR v3 expects 4 channels but spec has ${spec.channelCount}"
+        require(spec.channelCount == 6) {
+            "PINO-DR v7 expects 6 channels but spec has ${spec.channelCount}"
         }
         require(rawSamplesPerBin >= 1) {
-            "raw sample rate ${PreprocessingSpec.PINO_V3_RAW_SAMPLE_RATE_HZ} Hz cannot bin to " +
+            "raw sample rate ${PreprocessingSpec.PINO_V7_RAW_SAMPLE_RATE_HZ} Hz cannot bin to " +
                 "model rate ${spec.sampleRateHz} Hz"
         }
 
@@ -199,10 +210,6 @@ class PinoDrMotionEngine(
             Gson().fromJson(it, PinoManifest::class.java)
         }
 
-        // The single check that would have caught the previous windowing regression the
-        // moment it shipped. Divergence between training and runtime preprocessing is
-        // exactly the defect that made the V8 artifact unusable; do not let it happen
-        // again for PINO.
         require(manifest.preprocessing_version == spec.version) {
             "PINO manifest is for '${manifest.preprocessing_version}' but this build " +
                 "expects '${spec.version}'. Refusing to load; the runtime and training " +
@@ -211,17 +218,15 @@ class PinoDrMotionEngine(
         require(manifest.window_size == windowSize) {
             "PINO manifest window_size ${manifest.window_size} does not match runtime $windowSize"
         }
-        // sample_rate_hz in the manifest is the MODEL-facing rate, so it must be the same
-        // as the spec's sampleRateHz. The RAW rate is checked separately.
         val binRate = if (manifest.bin_sample_rate_hz > 0.0) manifest.bin_sample_rate_hz
         else 1.0 / manifest.bin_seconds.coerceAtLeast(1e-9)
         require(kotlin.math.abs(binRate - spec.sampleRateHz.toDouble()) < 1e-6) {
             "PINO manifest bin rate $binRate Hz does not match runtime ${spec.sampleRateHz} Hz"
         }
         require(kotlin.math.abs(manifest.raw_sample_rate_hz -
-            PreprocessingSpec.PINO_V3_RAW_SAMPLE_RATE_HZ.toDouble()) < 1e-6) {
+            PreprocessingSpec.PINO_V7_RAW_SAMPLE_RATE_HZ.toDouble()) < 1e-6) {
             "PINO manifest raw_sample_rate_hz ${manifest.raw_sample_rate_hz} does not match " +
-                "runtime ${PreprocessingSpec.PINO_V3_RAW_SAMPLE_RATE_HZ}"
+                "runtime ${PreprocessingSpec.PINO_V7_RAW_SAMPLE_RATE_HZ}"
         }
 
         val modelBytes = context.assets.open(MODEL_ASSET).use { it.readBytes() }
@@ -229,7 +234,7 @@ class PinoDrMotionEngine(
             val digest = MessageDigest.getInstance("SHA-256")
             val computedHash = digest.digest(modelBytes).joinToString("") { "%02x".format(it) }
             require(computedHash.equals(manifest.sha256, ignoreCase = true)) {
-                "PINO-DR v3 model file integrity check failed! Expected sha256: ${manifest.sha256}, computed: $computedHash"
+                "PINO-DR v7 model file integrity check failed! Expected sha256: ${manifest.sha256}, computed: $computedHash"
             }
         }
         val options = OrtSession.SessionOptions().apply {
@@ -250,9 +255,7 @@ class PinoDrMotionEngine(
      * samples has completed a bin AND the 10-bin window is full, i.e. once per second.
      *
      * @param timestampNs sample timestamp on the sensor event clock.
-     * @param aFwd vehicle forward acceleration, m/s^2. When vehicle-frame alignment is
-     *   not available, the caller passes a phone-frame proxy and accepts the resulting
-     *   error until [nisargpatel.deadreckoning.fusion.VehicleAlignmentCalibrator] converges.
+     * @param aFwd vehicle forward acceleration, m/s^2.
      * @param wYaw yaw rate about the vehicle Down axis, rad/s.
      * @param aLat vehicle lateral acceleration, m/s^2.
      * @param seedVelocityMps current velocity hint, typically the last GNSS speed or the
@@ -279,24 +282,54 @@ class PinoDrMotionEngine(
         val vPrev = (if (seedVelocityMps > 0f) seedVelocityMps else currentVelocityMps)
             .coerceIn(CLIP_V_PREV_MIN, CLIP_V_PREV_MAX)
 
-        // Accumulate into the current bin instead of pushing the raw sample straight in.
-        // This is the one change that most of the fix depends on.
+        // Numerical angular acceleration (d_omega/dt) using 5-point Savitzky-Golay filter
+        // at 10 Hz (Delta t = 0.1 s).
+        yawRingBuffer[yawSampleCount % 5] = clampedYaw
+        yawSampleCount++
+
+        val rawYawAccel = when {
+            yawSampleCount == 1 -> 0.0f
+            yawSampleCount < 5 -> {
+                // Backward finite difference for samples 1..3 before 5-point buffer saturates
+                val prevYaw = yawRingBuffer[(yawSampleCount - 2) % 5]
+                (clampedYaw - prevYaw) / 0.1f
+            }
+            else -> {
+                // 5-point Savitzky-Golay 1st derivative (degree 2, window 5, dt = 0.1s):
+                // Coefficients [-2, -1, 0, 1, 2] / (10 * dt) = [-2, -1, 0, 1, 2] / 1.0 (no extra division)
+                val y0 = yawRingBuffer[(yawSampleCount - 5) % 5]
+                val y1 = yawRingBuffer[(yawSampleCount - 4) % 5]
+                val y3 = yawRingBuffer[(yawSampleCount - 2) % 5]
+                val y4 = yawRingBuffer[(yawSampleCount - 1) % 5]
+                2.0f * y4 + 1.0f * y3 - 1.0f * y1 - 2.0f * y0
+            }
+        }
+        val clampedYawAccel = rawYawAccel.coerceIn(CLIP_YAW_ACCEL_MIN, CLIP_YAW_ACCEL_MAX)
+
+        // Centripetal residual: a_lat - v_prev * w_yaw
+        val rawCentripetal = clampedLat - vPrev * clampedYaw
+        val clampedCentripetal = rawCentripetal.coerceIn(CLIP_CENTRIPETAL_MIN, CLIP_CENTRIPETAL_MAX)
+
+        // Accumulate 6 channels into the current bin
         binAccumulator[0] += clampedFwd
         binAccumulator[1] += clampedYaw
         binAccumulator[2] += clampedLat
         binAccumulator[3] += vPrev
+        binAccumulator[4] += clampedYawAccel
+        binAccumulator[5] += clampedCentripetal
         samplesInCurrentBin++
 
         if (samplesInCurrentBin < rawSamplesPerBin) return null
 
-        // Close out the bin: replace the running sum with its mean and hand it to the
-        // window.
-        val bin = FloatArray(4)
+        // Close out the bin: replace the running sum with its mean and hand it to the window.
+        val bin = FloatArray(6)
         val inverse = 1.0f / rawSamplesPerBin
         bin[0] = binAccumulator[0] * inverse
         bin[1] = binAccumulator[1] * inverse
         bin[2] = binAccumulator[2] * inverse
         bin[3] = binAccumulator[3] * inverse
+        bin[4] = binAccumulator[4] * inverse
+        bin[5] = binAccumulator[5] * inverse
 
         binAccumulator.fill(0f)
         samplesInCurrentBin = 0
@@ -311,14 +344,16 @@ class PinoDrMotionEngine(
     private fun runInference(): PinoPrediction {
         val startNs = System.nanoTime()
 
-        // Build normalised input tensor [1, windowSize, 4].
+        // Build normalised input tensor [1, windowSize, 6].
         val inputFlat = FloatArray(windowSize * channelCount)
         var offset = 0
         for (bin in window) {
-            inputFlat[offset]     = bin[0] * S_A_FWD_SCALE  + S_A_FWD_MIN
-            inputFlat[offset + 1] = bin[1] * S_W_YAW_SCALE  + S_W_YAW_MIN
-            inputFlat[offset + 2] = bin[2] * S_A_LAT_SCALE  + S_A_LAT_MIN
-            inputFlat[offset + 3] = bin[3] * S_V_PREV_SCALE + S_V_PREV_MIN
+            inputFlat[offset]     = bin[0] * S_A_FWD_SCALE       + S_A_FWD_MIN
+            inputFlat[offset + 1] = bin[1] * S_W_YAW_SCALE       + S_W_YAW_MIN
+            inputFlat[offset + 2] = bin[2] * S_A_LAT_SCALE       + S_A_LAT_MIN
+            inputFlat[offset + 3] = bin[3] * S_V_PREV_SCALE      + S_V_PREV_MIN
+            inputFlat[offset + 4] = bin[4] * S_YAW_ACCEL_SCALE   + S_YAW_ACCEL_MIN
+            inputFlat[offset + 5] = bin[5] * S_CENTRIPETAL_SCALE + S_CENTRIPETAL_MIN
             offset += channelCount
         }
 
@@ -328,16 +363,18 @@ class PinoDrMotionEngine(
             longArrayOf(1, windowSize.toLong(), channelCount.toLong())
         )
 
-        val outputs = session.run(mapOf("imu_window" to inputTensor))
+        val outputs = session.run(mapOf("imu_input_6ch" to inputTensor))
         inputTensor.close()
 
         val dispTensor = outputs[0].value as Array<FloatArray>
         val oriTensor = outputs[1].value as Array<FloatArray>
         val zuptTensor = outputs[2].value as Array<FloatArray>
+        val routerTensor = outputs[3].value as Array<FloatArray>
 
         val dPredScaled = dispTensor[0][0]
         val oPredScaled = oriTensor[0][0]
         val zuptLogit = zuptTensor[0][0]
+        val routerWeights = routerTensor[0].clone()
 
         outputs.close()
 
@@ -348,6 +385,17 @@ class PinoDrMotionEngine(
         var rawYawRate = ((oPredScaled - S_Y_ORI_MIN) / S_Y_ORI_SCALE)
             .coerceIn(CLIP_YAW_MIN, CLIP_YAW_MAX)
         val pStop = 1.0f / (1.0f + exp(-zuptLogit))
+
+        // Find dominant expert from router distribution
+        var dominantIdx = 0
+        var maxWeight = -1.0f
+        for (i in routerWeights.indices) {
+            if (routerWeights[i] > maxWeight) {
+                maxWeight = routerWeights[i]
+                dominantIdx = i
+            }
+        }
+        val dominantExpert = EXPERT_NAMES.getOrElse(dominantIdx) { "Expert $dominantIdx" }
 
         // ZUPT hysteresis: prefer to stay in the state we are in unless the signal has
         // been decisive for a few consecutive predictions.
@@ -393,7 +441,9 @@ class PinoDrMotionEngine(
             stepLateralMeters = 0.0f,
             stepHeadingDeltaRadians = stepHeadingDeltaRadians,
             stepIntervalSeconds = stepInterval,
-            inferenceTimeMs = max(1L, elapsedMs)
+            inferenceTimeMs = max(1L, elapsedMs),
+            routerWeights = routerWeights,
+            dominantExpert = dominantExpert
         )
     }
 
@@ -406,6 +456,8 @@ class PinoDrMotionEngine(
         isStopped = false
         zuptHighCount = 0
         zuptLowCount = 0
+        yawRingBuffer.fill(0f)
+        yawSampleCount = 0
     }
 
     override fun close() {

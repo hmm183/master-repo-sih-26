@@ -1,0 +1,42 @@
+{
+  "model": "PINO-DR v7 Supreme MoE",
+  "architecture": "5-Expert Mixture-of-Experts with Kinematic Router",
+  "deployment_status": "PINO-DR v7 Supreme MoE",
+  "preprocessing_version": "pino-v7-moe",
+  "sha256": "e6fbf5e20628eb03eb20b0e4b8ffb5b34a4cd08743a5fec9742e2486fefbc27e",
+  "parameters": 75975,
+  "channels": [
+    "a_fwd",
+    "w_yaw",
+    "a_lat",
+    "v_prev",
+    "yaw_accel",
+    "a_cent_residual"
+  ],
+  "experts": [
+    "Motorway Cruising",
+    "Roundabout",
+    "Quick Accel",
+    "Hard Brake",
+    "Sharp Turns"
+  ],
+  "raw_sample_rate_hz": 10.0,
+  "bin_seconds": 1.0,
+  "bin_sample_rate_hz": 1.0,
+  "window_size": 10,
+  "window_seconds": 10.0,
+  "prediction_hz": 1.0,
+  "sample_rate_hz": 1.0,
+  "notes": [
+    "Supreme 5-Expert Neural Mixture-of-Experts (MoE) Architecture for PINO-DR v7.",
+    "Channels: [a_fwd, w_yaw, a_lat, v_prev, yaw_accel, a_cent_residual].",
+    "Outputs: [disp_pred, ori_pred, zupt_logits, router_weights]."
+  ],
+  "heads": {
+    "displacement": "Velocity delta (m/s) with kinematic residual connection",
+    "orientation": "Yaw rate (rad/s)",
+    "zupt": "Zero-velocity stationary probability logit",
+    "router_weights": "5-way continuous softmax routing distribution over specialists"
+  },
+  "zupt_threshold": 0.70
+}

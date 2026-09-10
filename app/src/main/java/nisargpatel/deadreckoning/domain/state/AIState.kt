@@ -16,5 +16,7 @@ data class AIState(
     val forwardUncertaintyMeters: Double = 0.0,
     val lateralUncertaintyMeters: Double = 0.0,
     val headingUncertaintyDegrees: Double = 0.0,
-    val predictionHz: Double = 0.0
+    val predictionHz: Double = 0.0,
+    val dominantExpert: String = "",
+    val expertWeights: List<Float> = emptyList()
 )

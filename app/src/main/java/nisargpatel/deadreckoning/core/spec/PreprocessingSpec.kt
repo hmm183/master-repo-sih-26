@@ -193,6 +193,25 @@ data class PreprocessingSpec(
          * PINO_V3.sampleRateHz = 10` raw samples per bin.
          */
         const val PINO_V3_RAW_SAMPLE_RATE_HZ = 10
+
+        /**
+         * PINO-DR v7 Supreme 5-Expert Mixture-of-Experts (MoE).
+         * 6 input channels: [a_fwd, w_yaw, a_lat, v_prev, yaw_accel, a_cent_residual].
+         */
+        val PINO_V7 = PreprocessingSpec(
+            version = "pino-v7-moe",
+            sampleRateHz = 1,
+            windowSamples = 10,
+            strideSamples = 1,
+            frame = ImuFrame.VEHICLE_FRD,
+            gravity = GravityHandling.REMOVED,
+            gyroOrder = GyroChannelOrder.VEHICLE_YAW_PITCH_ROLL,
+            channelNames = listOf(
+                "a_fwd", "w_yaw", "a_lat", "v_prev", "yaw_accel", "a_cent_residual"
+            )
+        )
+
+        const val PINO_V7_RAW_SAMPLE_RATE_HZ = 10
     }
 }
 

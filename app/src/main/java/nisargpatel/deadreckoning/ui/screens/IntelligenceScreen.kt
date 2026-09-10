@@ -99,7 +99,11 @@ fun IntelligenceScreen(
         }
 
         // ── 4. Neural Model Selection & Capabilities ───────────────────────
-        NeuralModelComparisonCard(activeModelVersion = aiState.modelVersion)
+        NeuralModelComparisonCard(
+            activeModelVersion = aiState.modelVersion,
+            dominantExpert = aiState.dominantExpert,
+            expertWeights = aiState.expertWeights
+        )
 
         // ── 5. Road Impact & Pothole Detector Card ─────────────────────────
         RoadImpactDetectorCard(
@@ -581,7 +585,11 @@ private fun MotionClassificationCard(
 // 4. MODEL COMPARISON CARD
 // ─────────────────────────────────────────────────────────────────────────────
 @Composable
-private fun NeuralModelComparisonCard(activeModelVersion: String = "") {
+private fun NeuralModelComparisonCard(
+    activeModelVersion: String = "",
+    dominantExpert: String = "",
+    expertWeights: List<Float> = emptyList()
+) {
     val isIdrActive = activeModelVersion.contains("IDR", ignoreCase = true)
     val isPinoActive = !isIdrActive && (activeModelVersion.contains("PINO", ignoreCase = true) || activeModelVersion.isBlank())
 
@@ -611,7 +619,7 @@ private fun NeuralModelComparisonCard(activeModelVersion: String = "") {
                     color = Color(0xFFEFF6FF)
                 ) {
                     Text(
-                        text = "ON-DEVICE TFLITE",
+                        text = "ON-DEVICE ONNX",
                         color = Color(0xFF2563EB),
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
@@ -664,42 +672,110 @@ private fun NeuralModelComparisonCard(activeModelVersion: String = "") {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // PINO-DR card
+            // PINO-DR v7 Supreme MoE card
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = if (isPinoActive) Color(0xFFEFF6FF) else Color(0xFFF8FAFC),
                 border = BorderStroke(if (isPinoActive) 1.5.dp else 1.dp, if (isPinoActive) Color(0xFF3B82F6) else Color(0xFFE2E8F0)),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (isPinoActive) Color(0xFF2563EB) else Color(0xFFE2E8F0)),
-                        contentAlignment = Alignment.Center
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, tint = if (isPinoActive) Color.White else Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isPinoActive) Color(0xFF2563EB) else Color(0xFFE2E8F0)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Bolt, contentDescription = null, tint = if (isPinoActive) Color.White else Color(0xFF64748B), modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("PINO-DR v7 Supreme MoE", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = if (isPinoActive) Color(0xFF0F172A) else Color(0xFF334155))
+                            Text("5-Expert Mixture-of-Experts • Kinematic Router", fontSize = 11.sp, color = if (isPinoActive) Color(0xFF2563EB) else Color(0xFF64748B))
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isPinoActive) Color(0xFF2563EB) else Color(0xFFF1F5F9)
+                        ) {
+                            Text(
+                                text = if (isPinoActive) "ACTIVE" else "STANDBY",
+                                color = if (isPinoActive) Color.White else Color(0xFF64748B),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("PINO-DR v3 Production", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = if (isPinoActive) Color(0xFF0F172A) else Color(0xFF334155))
-                        Text("Physics-Informed Neural Operator • ZUPT Gated", fontSize = 11.sp, color = if (isPinoActive) Color(0xFF2563EB) else Color(0xFF64748B))
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isPinoActive) Color(0xFF2563EB) else Color(0xFFF1F5F9)
-                    ) {
-                        Text(
-                            text = if (isPinoActive) "ACTIVE" else "STANDBY",
-                            color = if (isPinoActive) Color.White else Color(0xFF64748B),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                        )
+
+                    // 5-Expert MoE routing distribution
+                    val expertNames = listOf(
+                        "Motorway Cruising",
+                        "Roundabout",
+                        "Quick Accel",
+                        "Hard Brake",
+                        "Sharp Turns"
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "MoE ROUTER SPECIALISTS" + if (dominantExpert.isNotBlank()) " • $dominantExpert" else "",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF2563EB),
+                        letterSpacing = 0.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    for (i in expertNames.indices) {
+                        val weight = expertWeights.getOrNull(i) ?: if (i == 0) 0.85f else 0.03f
+                        val pct = (weight * 100).toInt().coerceIn(0, 100)
+                        val isDominant = dominantExpert == expertNames[i] || (dominantExpert.isBlank() && i == 0)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = expertNames[i],
+                                fontSize = 11.sp,
+                                fontWeight = if (isDominant) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isDominant) Color(0xFF0F172A) else Color(0xFF64748B),
+                                modifier = Modifier.width(115.dp)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(Color(0xFFE2E8F0))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(weight.coerceIn(0.02f, 1f))
+                                        .fillMaxHeight()
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(
+                                            if (isDominant) Brush.horizontalGradient(
+                                                listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8))
+                                            ) else Brush.horizontalGradient(
+                                                listOf(Color(0xFF94A3B8), Color(0xFF64748B))
+                                            )
+                                        )
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "$pct%",
+                                fontSize = 10.5.sp,
+                                fontWeight = if (isDominant) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isDominant) Color(0xFF1D4ED8) else Color(0xFF64748B),
+                                modifier = Modifier.width(32.dp)
+                            )
+                        }
                     }
                 }
             }
